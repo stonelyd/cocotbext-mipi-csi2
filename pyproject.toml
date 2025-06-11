@@ -1,14 +1,94 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "repl-nix-workspace"
-version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.11"
+name = "cocotbext-csi2"
+dynamic = ["version"]
+description = "MIPI CSI-2 simulation framework for cocotb"
+readme = "README.md"
+requires-python = ">=3.6"
+license = {text = "MIT"}
+authors = [
+    {name = "CSI-2 Extension Contributors", email = "contributors@cocotbext-csi2.org"},
+]
+keywords = ["mipi", "csi-2", "dphy", "cphy", "camera", "cocotb", "simulation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: cocotb",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Topic :: System :: Hardware",
+]
 dependencies = [
-    "cocotb-test>=0.2.4",
     "cocotb>=1.6.0",
-    "pytest-cov>=6.2.0",
-    "setuptools>=80.9.0",
     "cocotb-bus>=0.2.1",
     "numpy>=1.16.0",
+]
+
+[project.optional-dependencies]
+test = [
     "pytest>=6.0",
+    "pytest-cov",
+    "cocotb-test>=0.2.4",
+]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov",
+    "cocotb-test>=0.2.4",
+    "sphinx",
+    "sphinx-rtd-theme",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/user/cocotbext-csi2"
+Documentation = "https://cocotbext-csi2.readthedocs.io/"
+Repository = "https://github.com/user/cocotbext-csi2"
+"Bug Tracker" = "https://github.com/user/cocotbext-csi2/issues"
+
+[tool.setuptools]
+packages = ["cocotbext.csi2"]
+
+[tool.setuptools.dynamic]
+version = {attr = "cocotbext.csi2.about.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--import-mode=importlib",
+    "--cov=cocotbext.csi2",
+    "--cov-report=html",
+    "--cov-report=term-missing",
+]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.coverage.run]
+source = ["cocotbext.csi2"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "setup.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
 ]

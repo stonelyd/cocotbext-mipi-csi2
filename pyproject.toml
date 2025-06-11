@@ -1,0 +1,14 @@
+[project]
+name = "repl-nix-workspace"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = [
+    "cocotb-test>=0.2.4",
+    "cocotb>=1.6.0",
+    "pytest-cov>=6.2.0",
+    "setuptools>=80.9.0",
+    "cocotb-bus>=0.2.1",
+    "numpy>=1.16.0",
+    "pytest>=6.0",
+]

@@ -57,16 +57,16 @@ def demonstrate_basic_features():
     line_end = Csi2ShortPacket.line_end(VirtualChannel.VC1, 480)
     frame_end = Csi2ShortPacket.frame_end(VirtualChannel.VC1, 1001)
     
-    print(f"Frame Start: VC={frame_start.virtual_channel}, Frame={frame_start.word_count}")
-    print(f"Line Start:  VC={line_start.virtual_channel}, Line={line_start.word_count}")
-    print(f"Line End:    VC={line_end.virtual_channel}, Line={line_end.word_count}")
-    print(f"Frame End:   VC={frame_end.virtual_channel}, Frame={frame_end.word_count}")
+    print(f"Frame Start: VC={frame_start.virtual_channel}, Frame={frame_start.data}")
+    print(f"Line Start:  VC={line_start.virtual_channel}, Line={line_start.data}")
+    print(f"Line End:    VC={line_end.virtual_channel}, Line={line_end.data}")
+    print(f"Frame End:   VC={frame_end.virtual_channel}, Frame={frame_end.data}")
     
     # Long packets with different data types
-    image_data = generate_test_pattern("ramp", 640, 480, 1)
+    image_data = generate_test_pattern(640, 480, "ramp")
     raw8_packet = Csi2LongPacket(VirtualChannel.VC0, DataType.RAW8, image_data)
     
-    rgb_data = generate_test_pattern("checkerboard", 320, 240, 3) 
+    rgb_data = generate_test_pattern(320, 240, "checkerboard") 
     rgb_packet = Csi2LongPacket(VirtualChannel.VC2, DataType.RGB888, rgb_data)
     
     print(f"RAW8 Packet:  VC={raw8_packet.virtual_channel}, Size={len(raw8_packet.payload)} bytes")
@@ -171,7 +171,7 @@ def demonstrate_advanced_features():
     print("\n4. PATTERN GENERATION")
     patterns = ["ramp", "checkerboard", "solid", "walking_ones"]
     for pattern in patterns:
-        sample = generate_test_pattern(pattern, 16, 16, 1)[:8]
+        sample = generate_test_pattern(16, 16, pattern)[:8]
         print(f"• {pattern:12}: {[hex(b) for b in sample]}...")
 
 if __name__ == "__main__":

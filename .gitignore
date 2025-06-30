@@ -1,0 +1,377 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# cocotb specific
+sim_build/
+results.xml
+dump.vcd
+dump.fst
+dump.ghw
+dump.vcd.gz
+dump.fst.gz
+dump.ghw.gz
+*.vcd
+*.fst
+*.ghw
+*.vcd.gz
+*.fst.gz
+*.ghw.gz
+*.vvp
+*.vpi
+*.so
+*.dll
+*.dylib
+*.exe
+*.log
+*.out
+*.err
+*.pid
+*.lock
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# Verilog/SystemVerilog simulation artifacts
+*.vcd
+*.vpd
+*.fsdb
+*.shm
+*.wlf
+*.log
+*.jou
+*.pb
+*.wdb
+*.str
+*.key
+*.dat
+*.trn
+*.tbl
+*.bak
+*.old
+*.orig
+*.rej
+*.tmp
+*.swp
+*.swo
+*~
+
+# Icarus Verilog
+*.vvp
+*.vpi
+*.a
+*.o
+*.so
+*.dll
+*.dylib
+*.exe
+
+# ModelSim/QuestaSim
+work/
+transcript
+*.wlf
+*.log
+*.do
+*.tcl
+*.mpf
+*.ini
+*.bak
+*.old
+*.orig
+*.rej
+*.tmp
+*.swp
+*.swo
+*~
+
+# VCS
+simv
+simv.daidir/
+*.log
+*.key
+*.dat
+*.trn
+*.tbl
+*.bak
+*.old
+*.orig
+*.rej
+*.tmp
+*.swp
+*.swo
+*~
+
+# Xcelium
+xrun.log
+xrun.key
+*.log
+*.key
+*.dat
+*.trn
+*.tbl
+*.bak
+*.old
+*.orig
+*.rej
+*.tmp
+*.swp
+*.swo
+*~
+
+# Vivado
+*.jou
+*.log
+*.pb
+*.wdb
+*.str
+*.key
+*.dat
+*.trn
+*.tbl
+*.bak
+*.old
+*.orig
+*.rej
+*.tmp
+*.swp
+*.swo
+*~
+
+# Quartus
+*.qpf
+*.qsf
+*.qdf
+*.qws
+*.qar
+*.qxp
+*.qxp.bak
+*.qxp.old
+*.qxp.orig
+*.qxp.rej
+*.qxp.tmp
+*.qxp.swp
+*.qxp.swo
+*.qxp~
+*.qpf.bak
+*.qpf.old
+*.qpf.orig
+*.qpf.rej
+*.qpf.tmp
+*.qpf.swp
+*.qpf.swo
+*.qpf~
+*.qsf.bak
+*.qsf.old
+*.qsf.orig
+*.qsf.rej
+*.qsf.tmp
+*.qsf.swp
+*.qsf.swo
+*.qsf~
+*.qdf.bak
+*.qdf.old
+*.qdf.orig
+*.qdf.rej
+*.qdf.tmp
+*.qdf.swp
+*.qdf.swo
+*.qdf~
+*.qws.bak
+*.qws.old
+*.qws.orig
+*.qws.rej
+*.qws.tmp
+*.qws.swp
+*.qws.swo
+*.qws~
+*.qar.bak
+*.qar.old
+*.qar.orig
+*.qar.rej
+*.qar.tmp
+*.qar.swp
+*.qar.swo
+*.qar~
+
+# UVM
+*.log
+*.key
+*.dat
+*.trn
+*.tbl
+*.bak
+*.old
+*.orig
+*.rej
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# Editor backup files
+*~
+*.swp
+*.swo
+*~
+
+# Project specific
+# Keep uv.lock as it's used for dependency management
+# Keep .replit as it's project configuration

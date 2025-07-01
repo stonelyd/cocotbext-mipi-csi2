@@ -402,10 +402,10 @@ class Csi2RxModel:
             Next packet or None if timeout
         """
         if timeout_ns:
-            # Use asyncio.wait_for for timeout
+            # Use cocotb timeout approach
             try:
-                return await asyncio.wait_for(self.received_packets.get(), timeout=timeout_ns / 1e9)
-            except asyncio.TimeoutError:
+                return await First(self.received_packets.get(), Timer(timeout_ns, units="ns"))
+            except:
                 return None
         else:
             return await self.received_packets.get()
@@ -421,10 +421,10 @@ class Csi2RxModel:
             Frame info dictionary or None if timeout
         """
         if timeout_ns:
-            # Use asyncio.wait_for for timeout
+            # Use cocotb timeout approach
             try:
-                return await asyncio.wait_for(self.completed_frames.get(), timeout=timeout_ns / 1e9)
-            except asyncio.TimeoutError:
+                return await First(self.completed_frames.get(), Timer(timeout_ns, units="ns"))
+            except:
                 return None
         else:
             return await self.completed_frames.get()

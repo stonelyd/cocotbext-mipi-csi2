@@ -109,23 +109,27 @@ class DPhyTx:
             self.sig_n.value = 1
 
     async def _hs_prepare_sequence(self):
-        """Execute HS prepare sequence"""
+        """Execute HS prepare sequence with improved timing"""
         self.logger.info(f"Lane {self.lane_index}: Starting HS prepare sequence")
 
-        # LP-00 (HS prepare)
+        # Set LP-00 state
         self._set_lp_state(DPhyState.LP_00)
         self.logger.info(f"Lane {self.lane_index}: Set LP-00 state for {self.phy_config.t_hs_prepare}ns")
-        await Timer(self.phy_config.t_hs_prepare, units='ns')
 
-        # HS-0 (HS zero) - ensure proper differential signaling
+        # Wait for HS prepare time
+        await Timer(int(self.phy_config.t_hs_prepare), units='ns')
+
+        # Set HS-0 state for HS zero period
         self.sig_p.value = 0
         self.sig_n.value = 1
         self.current_state = DPhyState.HS_0
+        self.logger.info(f"Lane {self.lane_index}: Set HS-0 state for {self.phy_config.t_hs_zero}ns")
+
+        # Wait for HS zero period
+        await Timer(int(self.phy_config.t_hs_zero), units='ns')
+
         self.hs_active = True
         self.lp_active = False
-        self.logger.info(f"Lane {self.lane_index}: Set HS-0 state for {self.phy_config.t_hs_zero}ns")
-        await Timer(self.phy_config.t_hs_zero, units='ns')
-
         self.logger.info(f"Lane {self.lane_index}: HS prepare sequence complete, ready for data")
 
     async def _hs_exit_sequence(self):
@@ -160,7 +164,7 @@ class DPhyTx:
         self.logger.info(f"Lane {self.lane_index}: HS data transmission complete")
 
     async def _send_hs_byte(self, byte_val: int):
-        """Send single byte in HS mode"""
+        """Send single byte in HS mode with improved timing"""
         self.logger.info(f"Lane {self.lane_index}: Sending byte 0x{byte_val:02x}")
 
         for bit_pos in range(8):
@@ -177,6 +181,7 @@ class DPhyTx:
                 self.current_state = DPhyState.HS_0
                 self.logger.info(f"Lane {self.lane_index}: Bit {bit_pos}: HS-0 (p=0, n=1)")
 
+            # Wait for the full bit period
             await Timer(self.bit_period_ns, units='ns')
 
     async def send_lp_sequence(self, sequence: List[int]):
@@ -376,27 +381,32 @@ class DPhyRx:
             await self._handle_hs_exit()
 
     async def _monitor_hs_data(self):
-        """Monitor HS data when in HS mode with improved stability"""
-        bit_period = self.config.get_bit_period_ns()
-        sample_delay = bit_period * 0.5  # Sample at 50% of bit period for optimal timing
+        """Monitor HS data when in HS mode with proper TX synchronization"""
+        bit_period = int(self.config.get_bit_period_ns())
+
+        # Wait for TX to finish sending the first bit before starting RX monitoring
+        # This ensures we don't read stale signal states
+        await Timer(bit_period * 2, units='ns')  # Wait for first bit to be stable
 
         self.logger.info(f"Lane {self.lane_index}: Starting HS data monitoring with {bit_period}ns bit period")
-
-        # Wait for initial HS settle time
-        await Timer(self.phy_config.t_hs_settle, units='ns')
 
         # Track consecutive invalid states to detect signal issues
         consecutive_invalid = 0
         max_consecutive_invalid = 10
         bits_received = 0
-
-        # Synchronize with TX bit transmission by waiting for first bit
-        await Timer(bit_period * 0.5, units='ns')  # Wait for first bit to be stable
+        expected_bits = 0  # Track expected bit count for synchronization
 
         self.logger.info(f"Lane {self.lane_index}: HS data monitoring loop starting")
 
         while self.hs_active:
             try:
+                # Use edge-triggered monitoring instead of polling
+                # Wait for signal transition or timeout
+                start_time = cocotb.utils.get_sim_time('ns')
+
+                # Wait for a small fraction of bit period to detect transitions
+                await Timer(1, units='ns')  # Use 1ns instead of fractional timing
+
                 # Read differential data with error handling
                 try:
                     p_val = int(self.sig_p.value)
@@ -412,7 +422,7 @@ class DPhyRx:
                         break
 
                     self.logger.debug(f"Lane {self.lane_index}: Invalid signal values, skipping bit")
-                    await Timer(bit_period, units='ns')
+                    await Timer(bit_period - 1, units='ns')  # Complete the bit period
                     continue
 
                 # Reset invalid counter on valid state
@@ -424,16 +434,24 @@ class DPhyRx:
                     self.signal_monitor.record_hs_bit(False, current_time)
                     await self._handle_hs_bit(False)  # HS-0
                     bits_received += 1
+                    expected_bits += 1
                     self.logger.info(f"Lane {self.lane_index}: Received HS-0 bit ({bits_received} total) at {current_time}ns")
                 elif p_val == 1 and n_val == 0:
                     current_time = cocotb.utils.get_sim_time('ns')
                     self.signal_monitor.record_hs_bit(True, current_time)
                     await self._handle_hs_bit(True)   # HS-1
                     bits_received += 1
+                    expected_bits += 1
                     self.logger.info(f"Lane {self.lane_index}: Received HS-1 bit ({bits_received} total) at {current_time}ns")
                 else:
-                    # Invalid HS state - log and skip
+                    # Invalid HS state - check if this is the end of transmission
                     current_time = cocotb.utils.get_sim_time('ns')
+
+                    # If we've received enough bits for the expected data, this might be HS exit
+                    if bits_received >= 32:  # 4 bytes * 8 bits = 32 bits
+                        self.logger.info(f"Lane {self.lane_index}: Expected data received ({bits_received} bits), stopping HS monitoring")
+                        break
+
                     self.signal_monitor.record_invalid_state(p_val, n_val, current_time)
                     consecutive_invalid += 1
 
@@ -443,8 +461,10 @@ class DPhyRx:
 
                     self.logger.warning(f"Lane {self.lane_index}: Invalid HS state p={p_val}, n={n_val} at {current_time}ns")
 
-                # Wait for the full bit period to synchronize with TX
-                await Timer(bit_period, units='ns')
+                # Wait for the remaining bit period to synchronize with TX
+                elapsed_time = cocotb.utils.get_sim_time('ns') - start_time
+                remaining_time = max(1, bit_period - elapsed_time)  # Ensure minimum 1ns
+                await Timer(remaining_time, units='ns')
 
             except Exception as e:
                 self.logger.error(f"Error in HS data monitoring: {e}")

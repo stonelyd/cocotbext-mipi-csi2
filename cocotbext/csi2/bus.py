@@ -34,7 +34,7 @@ class Csi2Bus(Bus):
     _signals = ["clk_p", "clk_n", "data_p", "data_n"]
     _optional_signals = ["enable", "reset"]
 
-    def __init__(self, entity: SimHandleBase, prefix: Optional[str] = None, **kwargs):
+    def __init__(self, entity: SimHandleBase, prefix: Optional[str] = None, signals=None, **kwargs):
         """
         Initialize CSI-2 bus
 
@@ -45,8 +45,10 @@ class Csi2Bus(Bus):
         self.entity = entity
         self.prefix = prefix
 
+        if signals is None:
+            signals = self._signals
         # Initialize bus signals
-        super().__init__(entity, prefix, self._signals, optional_signals=self._optional_signals, **kwargs)
+        super().__init__(entity, prefix, signals, optional_signals=self._optional_signals, **kwargs)
 
         # Additional CSI-2 specific attributes
         self.lane_count = self._detect_lane_count()
@@ -99,12 +101,11 @@ class Csi2DPhyBus(Csi2Bus):
             lane_count: Number of data lanes (1, 2, 4, 8)
         """
         self.lane_count = lane_count
-
-        # Add data lane signals
+        signals = ["clk_p", "clk_n"]
         for i in range(lane_count):
-            self._signals.extend([f"data{i}_p", f"data{i}_n"])
-
-        super().__init__(entity, **kwargs)
+            signals.extend([f"data{i}_p", f"data{i}_n"])
+        # Only pass signals as a keyword argument, not positionally
+        super().__init__(entity, signals=signals, **kwargs)
 
 
 class Csi2CPhyBus(Csi2Bus):

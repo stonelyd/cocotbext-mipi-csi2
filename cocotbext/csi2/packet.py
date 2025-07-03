@@ -82,32 +82,8 @@ class Csi2PacketHeader:
     
     def correct_ecc(self) -> Tuple[bool, Optional["Csi2PacketHeader"]]:
         """Attempt to correct single-bit ECC errors"""
-        # Implementation of Hamming code error correction
-        calculated_ecc = calculate_ecc(self.data_id, self.word_count)
-        syndrome = self.ecc ^ calculated_ecc
-        
-        if syndrome == 0:
-            return True, None  # No error
-        
-        # Single-bit error correction logic
-        # This is a simplified implementation - full implementation would
-        # include complete Hamming code correction
-        error_positions = {
-            0x01: (0, 0),  # Bit 0 of data_id
-            0x02: (0, 1),  # Bit 1 of data_id
-            # ... additional error position mappings
-        }
-        
-        if syndrome in error_positions:
-            # Correct the error
-            corrected = Csi2PacketHeader(
-                data_id=self.data_id,
-                word_count=self.word_count,
-                ecc=calculated_ecc
-            )
-            return True, corrected
-        
-        return False, None  # Uncorrectable error
+        # For now, we do not support ECC correction. Always return False.
+        return False, None
 
 
 class Csi2Packet(ABC):
@@ -197,7 +173,7 @@ class Csi2ShortPacket(Csi2Packet):
 class Csi2LongPacket(Csi2Packet):
     """CSI-2 Long Packet (variable length)"""
     
-    def __init__(self, virtual_channel: int, data_type: DataType, payload: bytes):
+    def __init__(self, virtual_channel: int, data_type: DataType, payload: bytes, checksum: Optional[int] = None):
         """
         Create CSI-2 Long Packet
         
@@ -205,6 +181,7 @@ class Csi2LongPacket(Csi2Packet):
             virtual_channel: Virtual channel (0-3)
             data_type: Data type
             payload: Packet payload data
+            checksum: Optional pre-calculated checksum
         """
         if len(payload) > 65535:
             raise ValueError(f"Payload too large: {len(payload)} bytes")
@@ -212,7 +189,10 @@ class Csi2LongPacket(Csi2Packet):
         header = Csi2PacketHeader.from_vc_dt(virtual_channel, data_type.value, len(payload))
         super().__init__(header)
         self.payload = payload
-        self.checksum = calculate_checksum(payload)
+        if checksum is None:
+            self.checksum = calculate_checksum(payload)
+        else:
+            self.checksum = checksum
     
     def to_bytes(self) -> bytes:
         """Convert to byte array"""
@@ -351,7 +331,9 @@ class Csi2PacketParser:
             except Exception as e:
                 # Skip malformed data
                 self.error_count += 1
-                self.packet_buffer = self.packet_buffer[1:]
+                # Clear the buffer to prevent loops on corrupted data
+                self.packet_buffer.clear()
+                break
         
         return new_packets
     
@@ -381,7 +363,7 @@ class Csi2PacketParser:
         if self._is_short_packet_type(data_type):
             # Short packet - just the header
             packet = self._create_short_packet(header)
-            self.packet_buffer = self.packet_buffer[4:]
+            del self.packet_buffer[:4]
             return packet
         else:
             # Long packet - need payload + checksum
@@ -394,7 +376,7 @@ class Csi2PacketParser:
             checksum = struct.unpack('<H', checksum_bytes)[0]
             
             packet = self._create_long_packet(header, payload, checksum)
-            self.packet_buffer = self.packet_buffer[packet_size:]
+            del self.packet_buffer[:packet_size]
             return packet
     
     def _is_short_packet_type(self, data_type: int) -> bool:

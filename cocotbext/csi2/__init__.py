@@ -23,7 +23,7 @@ THE SOFTWARE.
 """
 
 from .about import __version__
-from .bus import Csi2Bus
+from .bus import Csi2Bus, Csi2DPhyBus, Csi2CPhyBus
 from .config import Csi2Config, PhyType
 from .packet import Csi2Packet, Csi2ShortPacket, Csi2LongPacket, DataType, VirtualChannel
 from .tx import Csi2TxModel
@@ -33,10 +33,12 @@ from .exceptions import Csi2Exception, Csi2ProtocolError, Csi2PhyError, Csi2EccE
 __all__ = [
     "__version__",
     "Csi2Bus",
-    "Csi2Config", 
+    "Csi2DPhyBus",
+    "Csi2CPhyBus",
+    "Csi2Config",
     "PhyType",
     "Csi2Packet",
-    "Csi2ShortPacket", 
+    "Csi2ShortPacket",
     "Csi2LongPacket",
     "DataType",
     "VirtualChannel",
@@ -44,6 +46,6 @@ __all__ = [
     "Csi2RxModel",
     "Csi2Exception",
     "Csi2ProtocolError",
-    "Csi2PhyError", 
+    "Csi2PhyError",
     "Csi2EccError"
 ]

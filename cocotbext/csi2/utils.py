@@ -30,53 +30,33 @@ import logging
 
 def calculate_ecc(data_id: int, word_count: int) -> int:
     """
-    Calculate 8-bit Error Correction Code (ECC) for CSI-2 packet header
-    
-    Uses Hamming code for single-bit error detection and correction
-    
+    Calculate 8-bit Error Correction Code (ECC) for CSI-2 packet header.
+
+    This implementation is based on the MIPI CSI-2 Specification.
+
     Args:
-        data_id: 8-bit Data Identifier
-        word_count: 16-bit Word Count
-        
+        data_id: 8-bit Data Identifier (DI).
+        word_count: 16-bit Word Count (WC).
+
     Returns:
-        8-bit ECC value
+        8-bit ECC value.
     """
-    # Combine data_id and word_count into 24-bit value
+    # The 24 bits of data for which ECC is calculated
     data = (data_id << 16) | word_count
-    
-    # Calculate parity bits using Hamming code
-    # P0, P1, P2, P3, P4, P5 for positions 1, 2, 4, 8, 16, 32
-    p0 = 0
-    p1 = 0
-    p2 = 0
-    p3 = 0
-    p4 = 0
-    p5 = 0
-    
-    # Calculate parity for each bit position
-    for i in range(24):
-        bit = (data >> i) & 1
-        if bit:
-            if i & 1:
-                p0 ^= 1
-            if i & 2:
-                p1 ^= 1
-            if i & 4:
-                p2 ^= 1
-            if i & 8:
-                p3 ^= 1
-            if i & 16:
-                p4 ^= 1
-            if i & 32:
-                p5 ^= 1
-    
-    # Additional parity bits for CSI-2 specific implementation
-    p6 = p0 ^ p1 ^ p2 ^ p3 ^ p4 ^ p5
-    p7 = (data >> 0) ^ (data >> 1) ^ (data >> 2) ^ (data >> 4) ^ (data >> 5) ^ (data >> 7)
-    
-    ecc = (p7 << 7) | (p6 << 6) | (p5 << 5) | (p4 << 4) | (p3 << 3) | (p2 << 2) | (p1 << 1) | p0
-    
-    return ecc & 0xFF
+
+    # Extracting each bit into a list, d[0] is the LSB.
+    d = [(data >> i) & 1 for i in range(24)]
+
+    # Parity bits based on the CSI-2 specification's generator matrix
+    p = [0] * 6
+    p[0] = d[0] ^ d[1] ^ d[2] ^ d[4] ^ d[5] ^ d[7] ^ d[10] ^ d[11] ^ d[13] ^ d[16] ^ d[19] ^ d[21]
+    p[1] = d[0] ^ d[1] ^ d[3] ^ d[4] ^ d[6] ^ d[8] ^ d[11] ^ d[12] ^ d[14] ^ d[17] ^ d[20] ^ d[22]
+    p[2] = d[0] ^ d[2] ^ d[3] ^ d[5] ^ d[6] ^ d[9] ^ d[12] ^ d[13] ^ d[15] ^ d[18] ^ d[21] ^ d[23]
+    p[3] = d[1] ^ d[2] ^ d[3] ^ d[7] ^ d[8] ^ d[9] ^ d[10] ^ d[13] ^ d[14] ^ d[15] ^ d[16] ^ d[22] ^ d[23]
+    p[4] = d[4] ^ d[5] ^ d[6] ^ d[7] ^ d[8] ^ d[9] ^ d[10] ^ d[17] ^ d[18] ^ d[19] ^ d[20] ^ d[21] ^ d[22] ^ d[23]
+    p[5] = d[11] ^ d[12] ^ d[13] ^ d[14] ^ d[15] ^ d[16] ^ d[17] ^ d[18] ^ d[19] ^ d[20] ^ d[21] ^ d[22] ^ d[23]
+
+    return (p[5] << 5) | (p[4] << 4) | (p[3] << 3) | (p[2] << 2) | (p[1] << 1) | p[0]
 
 
 def validate_ecc(data_id: int, word_count: int, received_ecc: int) -> bool:

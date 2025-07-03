@@ -23,7 +23,7 @@ THE SOFTWARE.
 """
 
 import cocotb
-from cocotb.triggers import Timer, Event, First
+from cocotb.triggers import Timer, Event, First, with_timeout
 from cocotb.queue import Queue
 import asyncio
 import logging
@@ -58,8 +58,10 @@ class Csi2FrameBuffer:
         """Start new frame"""
         self.frame_number = frame_number
         self.frame_active = True
-        self.current_line = 0
+        self.current_line = 1
         self.frame_data.clear()
+        self.line_data.clear()
+        self.line_active = False
         self.timestamp_start = cocotb.utils.get_sim_time('ns')
 
     def end_frame(self, frame_number: int):
@@ -75,7 +77,9 @@ class Csi2FrameBuffer:
         if not self.frame_active:
             raise Csi2ProtocolError("Line start without active frame")
 
-        self.current_line = line_number
+        if self.current_line != line_number:
+            raise Csi2ProtocolError(f"Line number mismatch: expected {self.current_line}, got {line_number}")
+
         self.line_active = True
         self.line_data.clear()
 
@@ -87,6 +91,7 @@ class Csi2FrameBuffer:
         # Add line data to frame
         self.frame_data.extend(self.line_data)
         self.line_active = False
+        self.current_line += 1
 
     def add_pixel_data(self, data_type: DataType, payload: bytes):
         """Add pixel data to current line"""
@@ -116,6 +121,20 @@ class Csi2FrameBuffer:
             'duration_ns': self.timestamp_end - self.timestamp_start if self.timestamp_end else None
         }
 
+    def reset(self):
+        """Reset frame buffer state"""
+        self.frame_number = 0
+        self.frame_active = False
+        self.line_active = False
+        self.current_line = 0
+        self.frame_data.clear()
+        self.line_data.clear()
+        self.frame_width = 0
+        self.frame_height = 0
+        self.data_type = None
+        self.timestamp_start = None
+        self.timestamp_end = None
+
 
 class Csi2RxModel:
     """
@@ -126,35 +145,50 @@ class Csi2RxModel:
     """
 
     def __init__(self, bus: Union[Csi2Bus, Csi2DPhyBus, Csi2CPhyBus],
-                 config: Csi2Config):
+                 config: Csi2Config, phy_model=None):
         """
         Initialize CSI-2 receiver model
 
         Args:
             bus: CSI-2 bus interface (D-PHY or C-PHY)
             config: CSI-2 configuration
+            phy_model: Optional shared PHY model (creates new one if None)
         """
         self.bus = bus
         self.config = config
 
-        # Initialize PHY model based on configuration
-        if config.phy_type == PhyType.DPHY:
-            if not isinstance(bus, Csi2DPhyBus):
-                self.phy_bus = Csi2DPhyBus(bus.entity, config.lane_count)
+        # Use provided PHY model or create new one
+        if phy_model is not None:
+            self.phy_model = phy_model
+            # Determine bus type from PHY model
+            if isinstance(phy_model, DPhyModel):
+                self.phy_bus = phy_model.bus
+            elif isinstance(phy_model, CPhyModel):
+                self.phy_bus = phy_model.bus
             else:
-                self.phy_bus = bus
-            self.phy_model = DPhyModel(self.phy_bus, config)
-        elif config.phy_type == PhyType.CPHY:
-            if not isinstance(bus, Csi2CPhyBus):
-                self.phy_bus = Csi2CPhyBus(bus.entity, config.trio_count)
-            else:
-                self.phy_bus = bus
-            self.phy_model = CPhyModel(self.phy_bus, config)
+                raise Csi2ProtocolError(f"Unsupported PHY model type: {type(phy_model)}")
         else:
-            raise Csi2ProtocolError(f"Unsupported PHY type: {config.phy_type}")
+            # Initialize PHY model based on configuration
+            if config.phy_type == PhyType.DPHY:
+                if not isinstance(bus, Csi2DPhyBus):
+                    self.phy_bus = Csi2DPhyBus(bus.entity, config.lane_count)
+                else:
+                    self.phy_bus = bus
+                self.phy_model = DPhyModel(self.phy_bus, config)
+            elif config.phy_type == PhyType.CPHY:
+                if not isinstance(bus, Csi2CPhyBus):
+                    self.phy_bus = Csi2CPhyBus(bus.entity, config.trio_count)
+                else:
+                    self.phy_bus = bus
+                self.phy_model = CPhyModel(self.phy_bus, config)
+            else:
+                raise Csi2ProtocolError(f"Unsupported PHY type: {config.phy_type}")
 
         # Packet parser
         self.parser = Csi2PacketParser()
+
+        # Raw data buffer for accumulating bytes from PHY
+        self.raw_data_buffer = bytearray()
 
         # Frame buffers for each virtual channel
         self.frame_buffers = {vc: Csi2FrameBuffer(vc) for vc in range(16)}
@@ -205,44 +239,36 @@ class Csi2RxModel:
             on_data_received=self._on_phy_data_received
         )
 
-        # Start reception task
-        self._rx_task = cocotb.start_soon(self._reception_handler())
+        # Reception is handled by PHY callbacks
+        # self._rx_task = cocotb.start_soon(self._reception_handler())
 
     async def _on_phy_packet_start(self):
         """Handle PHY packet start"""
         self.receiving = True
-        self.logger.debug("PHY packet transmission started")
+        self.logger.info("RX: PHY packet transmission started")
 
     async def _on_phy_packet_end(self):
         """Handle PHY packet end"""
         self.receiving = False
-        self.logger.debug("PHY packet transmission ended")
+        self.logger.info("RX: PHY packet transmission ended")
 
-        # Process any buffered data
-        raw_data = self.phy_model.get_received_data()
-        if raw_data:
+        # Process buffered data
+        if self.raw_data_buffer:
+            raw_data = bytes(self.raw_data_buffer)
+            self.logger.info(f"RX: Processing {len(raw_data)} bytes from buffer")
             await self._process_raw_data(raw_data)
+            self.raw_data_buffer.clear()
+            # Don't reset parser here - it should maintain state across packets
 
     async def _on_phy_data_received(self, byte_data):
         """Handle PHY data reception"""
-        # Data is buffered in the PHY model and processed at packet end
-        pass
-
-    async def _reception_handler(self):
-        """Main reception handler task"""
-        while True:
-            try:
-                # Check for received data from PHY
-                if not self.receiving:
-                    raw_data = self.phy_model.get_received_data()
-                    if raw_data:
-                        await self._process_raw_data(raw_data)
-
-                await Timer(100, units='ns')  # Small delay
-
-            except Exception as e:
-                self.logger.error(f"Reception handler error: {e}")
-                await Timer(1000, units='ns')  # Longer delay on error
+        # Accumulate received bytes for processing
+        if isinstance(byte_data, int):
+            # Single byte received
+            self.raw_data_buffer.append(byte_data)
+        else:
+            # Multiple bytes received
+            self.raw_data_buffer.extend(byte_data)
 
     async def _process_raw_data(self, raw_data: bytes):
         """
@@ -253,8 +279,17 @@ class Csi2RxModel:
         """
         self.bytes_received += len(raw_data)
 
+        # Debug: log raw data
+        self.logger.info(f"RX: Raw data received: {[f'{b:02x}' for b in raw_data[:20]]}...")
+
         # Feed data to parser
         new_packets = self.parser.feed_data(raw_data)
+
+        # Debug: log parsed packets
+        for packet in new_packets:
+            self.logger.info(f"RX: Parsed packet: VC={packet.virtual_channel}, "
+                             f"DT=0x{packet.data_type:02x}, "
+                             f"Type={'Short' if packet.is_short_packet() else 'Long'}")
 
         # Process each parsed packet
         for packet in new_packets:
@@ -402,12 +437,13 @@ class Csi2RxModel:
             Next packet or None if timeout
         """
         if timeout_ns:
-            # Use cocotb timeout approach
             try:
-                return await First(self.received_packets.get(), Timer(timeout_ns, units="ns"))
-            except:
+                return await with_timeout(self.received_packets.get(), timeout_ns, 'ns')
+            except cocotb.result.SimTimeoutError:
                 return None
         else:
+            if self.received_packets.empty():
+                return None
             return await self.received_packets.get()
 
     async def get_next_frame(self, timeout_ns: Optional[int] = None) -> Optional[dict]:
@@ -421,10 +457,9 @@ class Csi2RxModel:
             Frame info dictionary or None if timeout
         """
         if timeout_ns:
-            # Use cocotb timeout approach
             try:
-                return await First(self.completed_frames.get(), Timer(timeout_ns, units="ns"))
-            except:
+                return await with_timeout(self.completed_frames.get(), timeout_ns, 'ns')
+            except cocotb.result.SimTimeoutError:
                 return None
         else:
             return await self.completed_frames.get()
@@ -553,6 +588,12 @@ class Csi2RxModel:
         # Clear frame queue
         while not self.completed_frames.empty():
             self.completed_frames.get_nowait()
+
+        # Clear raw data buffer
+        self.raw_data_buffer.clear()
+
+        # Reset packet parser
+        self.parser.reset()
 
         # Reset frame buffers
         for vc in range(16):

@@ -42,6 +42,29 @@ class TB:
         )
         if phy_type == PhyType.DPHY:
             self.bus = Csi2DPhyBus(self.dut, lane_count=lane_count)
+
+            # Initialize D-PHY signals to LP-11 state
+            if hasattr(self.dut, 'clk_p'):
+                self.dut.clk_p.value = 1
+                self.dut.clk_n.value = 1
+            for i in range(lane_count):
+                if hasattr(self.dut, f'data{i}_p'):
+                    getattr(self.dut, f'data{i}_p').value = 1
+                    getattr(self.dut, f'data{i}_n').value = 1
+
+            # Wait for signals to stabilize
+            await Timer(10, units="ns")
+
+            # Debug: check signal values after initialization
+            cocotb.log.info(f"DUT signal values after initialization:")
+            if hasattr(self.dut, 'clk_p'):
+                cocotb.log.info(f"  clk_p: {self.dut.clk_p.value}, clk_n: {self.dut.clk_n.value}")
+            for i in range(lane_count):
+                if hasattr(self.dut, f'data{i}_p'):
+                    p_val = getattr(self.dut, f'data{i}_p').value
+                    n_val = getattr(self.dut, f'data{i}_n').value
+                    cocotb.log.info(f"  data{i}_p: {p_val}, data{i}_n: {n_val}")
+
             from cocotbext.csi2.phy import DPhyModel
             self.phy_model = DPhyModel(self.bus, self.config)
         else:

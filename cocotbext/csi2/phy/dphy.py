@@ -107,21 +107,23 @@ class DPhyTx:
 
     async def _hs_prepare_sequence(self):
         """Execute HS prepare sequence"""
-        self.logger.info(f"Lane {self.lane_index}: Starting HS prepare")
+        self.logger.info(f"Lane {self.lane_index}: Starting HS prepare sequence")
 
         # LP-00 (HS prepare)
         self._set_lp_state(DPhyState.LP_00)
-        self.logger.info(f"Lane {self.lane_index}: Set LP-00 state")
+        self.logger.info(f"Lane {self.lane_index}: Set LP-00 state for {self.phy_config.t_hs_prepare}ns")
         await Timer(self.phy_config.t_hs_prepare, units='ns')
 
-        # HS-0 (HS zero)
+        # HS-0 (HS zero) - ensure proper differential signaling
         self.sig_p.value = 0
         self.sig_n.value = 1
         self.current_state = DPhyState.HS_0
         self.hs_active = True
         self.lp_active = False
-        self.logger.info(f"Lane {self.lane_index}: Set HS-0 state")
+        self.logger.info(f"Lane {self.lane_index}: Set HS-0 state for {self.phy_config.t_hs_zero}ns")
         await Timer(self.phy_config.t_hs_zero, units='ns')
+
+        self.logger.info(f"Lane {self.lane_index}: HS prepare sequence complete, ready for data")
 
     async def _hs_exit_sequence(self):
         """Execute HS exit sequence"""
@@ -156,6 +158,8 @@ class DPhyTx:
 
     async def _send_hs_byte(self, byte_val: int):
         """Send single byte in HS mode"""
+        self.logger.debug(f"Lane {self.lane_index}: Sending byte 0x{byte_val:02x}")
+
         for bit_pos in range(8):
             bit_val = (byte_val >> bit_pos) & 1
 
@@ -163,10 +167,12 @@ class DPhyTx:
                 self.sig_p.value = 1
                 self.sig_n.value = 0
                 self.current_state = DPhyState.HS_1
+                self.logger.debug(f"Lane {self.lane_index}: Bit {bit_pos}: HS-1")
             else:
                 self.sig_p.value = 0
                 self.sig_n.value = 1
                 self.current_state = DPhyState.HS_0
+                self.logger.debug(f"Lane {self.lane_index}: Bit {bit_pos}: HS-0")
 
             await Timer(self.bit_period_ns, units='ns')
 
@@ -246,8 +252,12 @@ class DPhyRx:
         self._monitor_task = None
         self._hs_monitor_task = None
 
-        # Start signal monitoring
-        self._monitor_task = cocotb.start_soon(self._monitor_signals())
+        # Signal quality monitoring
+        self.signal_monitor = DPhySignalMonitor(lane_index)
+
+        # Start signal monitoring only for data lanes (not clock lane)
+        if not self.is_clock_lane:
+            self._monitor_task = cocotb.start_soon(self._monitor_signals())
 
         self.logger = logging.getLogger(f'cocotbext.csi2.dphy.rx.lane{lane_index}')
 
@@ -278,24 +288,62 @@ class DPhyRx:
         else:  # p_val == 1 and n_val == 1
             return DPhyState.LP_11
 
+    def _decode_hs_state(self) -> int:
+        """Decode current HS state from signals"""
+        try:
+            p_val = int(self.sig_p.value)
+            n_val = int(self.sig_n.value)
+        except ValueError:
+            # Handle 'z' (high impedance) values - treat as invalid
+            return -1
+
+        # HS-0: p=0, n=1; HS-1: p=1, n=0
+        if p_val == 0 and n_val == 1:
+            return DPhyState.HS_0
+        elif p_val == 1 and n_val == 0:
+            return DPhyState.HS_1
+        else:
+            # Invalid HS state
+            return -1
+
     async def _monitor_signals(self):
-        """Monitor D-PHY signals for state changes"""
+        """Monitor D-PHY signals for state changes with debouncing"""
         self.current_state = self._decode_lp_state()
+        self.logger.info(f"Lane {self.lane_index}: Starting signal monitoring, initial state: {self.current_state}")
+
+        # Debouncing parameters
+        debounce_time = 10  # ns
+        last_state_change = 0
+        stable_state = self.current_state
 
         while True:
             try:
-                # Poll for signal changes instead of using Edge triggers
-                await Timer(10, units='ns')  # Poll every 10ns
+                # Use polling with debouncing instead of edge triggers
+                await Timer(5, units='ns')  # Poll every 5ns
 
+                current_time = cocotb.utils.get_sim_time('ns')
                 new_state = self._decode_lp_state()
 
-                if new_state != self.current_state:
-                    await self._process_state_change(self.current_state, new_state)
-                    self.current_state = new_state
+                # Only process state changes if enough time has passed (debouncing)
+                if new_state != stable_state and (current_time - last_state_change) > debounce_time:
+                    # Verify state is stable by checking again after a short delay
+                    await Timer(2, units='ns')
+                    verified_state = self._decode_lp_state()
+
+                    if verified_state == new_state:
+                        # State change is confirmed stable
+                        self.signal_monitor.record_signal_transition(stable_state, new_state, current_time)
+                        await self._process_state_change(stable_state, new_state)
+                        stable_state = new_state
+                        last_state_change = current_time
+                        self.current_state = new_state
+                    else:
+                        # State change was transient, ignore
+                        self.logger.debug(f"Lane {self.lane_index}: Ignoring transient state change {stable_state} -> {new_state}")
 
             except Exception as e:
                 self.logger.error(f"Error in signal monitoring: {e}")
-                break
+                await Timer(10, units='ns')
 
     async def _process_state_change(self, old_state: int, new_state: int):
         """Process D-PHY state transitions"""
@@ -312,55 +360,111 @@ class DPhyRx:
             await self._handle_hs_exit()
 
     async def _monitor_hs_data(self):
-        """Monitor HS data when in HS mode"""
+        """Monitor HS data when in HS mode with improved stability"""
         bit_period = self.config.get_bit_period_ns()
-        half_bit_period = bit_period / 2
+        sample_delay = bit_period * 0.4  # Sample at 40% of bit period for better timing
+
+        self.logger.info(f"Lane {self.lane_index}: Starting HS data monitoring with {bit_period}ns bit period")
+
+        # Wait for initial HS settle time
+        await Timer(self.phy_config.t_hs_settle, units='ns')
+
+        # Track consecutive invalid states to detect signal issues
+        consecutive_invalid = 0
+        max_consecutive_invalid = 10
 
         while self.hs_active:
             try:
-                # Wait to sample in the middle of the bit
-                await Timer(half_bit_period, units='ns')
+                # Wait to sample at optimal point in bit period
+                await Timer(sample_delay, units='ns')
 
-                # Read differential data
+                # Read differential data with error handling
                 try:
                     p_val = int(self.sig_p.value)
                     n_val = int(self.sig_n.value)
-                except ValueError:
-                    # Handle 'z' values - skip this bit
-                    await Timer(half_bit_period, units='ns')
+                except (ValueError, TypeError):
+                    # Handle 'z', 'x', or other invalid values
+                    current_time = cocotb.utils.get_sim_time('ns')
+                    self.signal_monitor.record_invalid_state(-1, -1, current_time)
+                    consecutive_invalid += 1
+
+                    if consecutive_invalid >= max_consecutive_invalid:
+                        self.logger.warning(f"Lane {self.lane_index}: Too many consecutive invalid states, stopping HS monitoring")
+                        break
+
+                    self.logger.debug(f"Lane {self.lane_index}: Invalid signal values, skipping bit")
+                    await Timer(bit_period - sample_delay, units='ns')
                     continue
+
+                # Reset invalid counter on valid state
+                consecutive_invalid = 0
 
                 # HS-0: p=0, n=1; HS-1: p=1, n=0
                 if p_val == 0 and n_val == 1:
+                    current_time = cocotb.utils.get_sim_time('ns')
+                    self.signal_monitor.record_hs_bit(False, current_time)
                     await self._handle_hs_bit(False)  # HS-0
+                    self.logger.debug(f"Lane {self.lane_index}: Received HS-0 bit")
                 elif p_val == 1 and n_val == 0:
+                    current_time = cocotb.utils.get_sim_time('ns')
+                    self.signal_monitor.record_hs_bit(True, current_time)
                     await self._handle_hs_bit(True)   # HS-1
+                    self.logger.debug(f"Lane {self.lane_index}: Received HS-1 bit")
+                else:
+                    # Invalid HS state - log and skip
+                    current_time = cocotb.utils.get_sim_time('ns')
+                    self.signal_monitor.record_invalid_state(p_val, n_val, current_time)
+                    consecutive_invalid += 1
+
+                    if consecutive_invalid >= max_consecutive_invalid:
+                        self.logger.warning(f"Lane {self.lane_index}: Too many consecutive invalid HS states, stopping HS monitoring")
+                        break
+
+                    self.logger.warning(f"Lane {self.lane_index}: Invalid HS state p={p_val}, n={n_val}")
 
                 # Wait for the remainder of the bit period
-                await Timer(half_bit_period, units='ns')
+                await Timer(bit_period - sample_delay, units='ns')
 
             except Exception as e:
                 self.logger.error(f"Error in HS data monitoring: {e}")
                 break
 
+        self.logger.info(f"Lane {self.lane_index}: HS data monitoring ended")
+
     async def _handle_hs_prepare(self):
         """Handle HS prepare sequence detection"""
-        self.logger.debug(f"Lane {self.lane_index}: HS prepare detected")
+        self.logger.info(f"Lane {self.lane_index}: HS prepare detected, waiting for HS settle")
 
-        # Wait for HS zero period
+        # Wait for HS zero period and settle time
         await Timer(self.phy_config.t_hs_settle, units='ns')
 
-        self.hs_active = True
-        self.lp_active = False
-        self.byte_buffer = 0
-        self.bit_count = 0
+        # Check for HS state more robustly using HS state decoder
+        hs_detected = False
+        for _ in range(5):  # Check multiple times to ensure stability
+            current_hs_state = self._decode_hs_state()
+            if current_hs_state in [DPhyState.HS_0, DPhyState.HS_1]:
+                hs_detected = True
+                self.logger.info(f"Lane {self.lane_index}: HS state detected: {current_hs_state}")
+                break
+            await Timer(2, units='ns')  # Small delay between checks
 
-        # Start HS data monitoring
-        if self._hs_monitor_task is None or self._hs_monitor_task.done():
-            self._hs_monitor_task = cocotb.start_soon(self._monitor_hs_data())
+        if hs_detected:
+            self.hs_active = True
+            self.lp_active = False
+            self.byte_buffer = 0
+            self.bit_count = 0
 
-        if self.on_hs_start:
-            await self.on_hs_start()
+            self.logger.info(f"Lane {self.lane_index}: Entered HS mode, starting data monitoring")
+
+            # Start HS data monitoring
+            if self._hs_monitor_task is None or self._hs_monitor_task.done():
+                self._hs_monitor_task = cocotb.start_soon(self._monitor_hs_data())
+
+            if self.on_hs_start:
+                await self.on_hs_start()
+        else:
+            current_lp_state = self._decode_lp_state()
+            self.logger.warning(f"Lane {self.lane_index}: Expected HS state but got LP state {current_lp_state}, staying in LP mode")
 
     async def _handle_hs_bit(self, bit_value: bool):
         """Handle received HS data bit"""
@@ -373,10 +477,12 @@ class DPhyRx:
         if self.bit_count >= 8:
             # Complete byte received
             self.received_data.append(self.byte_buffer)
+            self.logger.debug(f"Lane {self.lane_index}: Received byte 0x{self.byte_buffer:02x}")
 
             # Send chunk if buffer is full
             if len(self.received_data) >= self.chunk_size and self.on_data_received:
                 chunk = bytes(self.received_data)
+                self.logger.info(f"Lane {self.lane_index}: Sending {len(chunk)} bytes via callback")
                 await self.on_data_received(chunk)
                 self.received_data.clear()
 
@@ -414,6 +520,64 @@ class DPhyRx:
         self.received_data.clear()
         self.byte_buffer = 0
         self.bit_count = 0
+
+    def get_signal_statistics(self) -> dict:
+        """Get signal quality statistics"""
+        return self.signal_monitor.get_statistics()
+
+    def reset_signal_monitor(self):
+        """Reset signal quality monitoring"""
+        self.signal_monitor.reset()
+
+
+class DPhySignalMonitor:
+    """D-PHY Signal Quality Monitor"""
+
+    def __init__(self, lane_index: int):
+        self.lane_index = lane_index
+        self.signal_transitions = 0
+        self.hs_bits_received = 0
+        self.hs_bits_expected = 0
+        self.invalid_states = 0
+        self.timing_violations = 0
+        self.last_transition_time = 0
+        self.logger = logging.getLogger(f'cocotbext.csi2.dphy.monitor.lane{lane_index}')
+
+    def record_signal_transition(self, old_state: int, new_state: int, time_ns: int):
+        """Record a signal state transition"""
+        self.signal_transitions += 1
+        self.last_transition_time = time_ns
+        self.logger.debug(f"Lane {self.lane_index}: Signal transition {old_state}->{new_state} at {time_ns}ns")
+
+    def record_hs_bit(self, bit_value: bool, time_ns: int):
+        """Record a received HS bit"""
+        self.hs_bits_received += 1
+        self.logger.debug(f"Lane {self.lane_index}: HS bit {bit_value} at {time_ns}ns")
+
+    def record_invalid_state(self, p_val: int, n_val: int, time_ns: int):
+        """Record an invalid signal state"""
+        self.invalid_states += 1
+        self.logger.warning(f"Lane {self.lane_index}: Invalid state p={p_val}, n={n_val} at {time_ns}ns")
+
+    def get_statistics(self) -> dict:
+        """Get signal quality statistics"""
+        return {
+            'signal_transitions': self.signal_transitions,
+            'hs_bits_received': self.hs_bits_received,
+            'hs_bits_expected': self.hs_bits_expected,
+            'invalid_states': self.invalid_states,
+            'timing_violations': self.timing_violations,
+            'bit_error_rate': (self.invalid_states / max(1, self.hs_bits_received)) * 100
+        }
+
+    def reset(self):
+        """Reset all counters"""
+        self.signal_transitions = 0
+        self.hs_bits_received = 0
+        self.hs_bits_expected = 0
+        self.invalid_states = 0
+        self.timing_violations = 0
+        self.last_transition_time = 0
 
 
 class DPhyModel:
@@ -542,10 +706,26 @@ class DPhyModel:
     def set_rx_callbacks(self, on_packet_start=None, on_packet_end=None,
                         on_data_received=None):
         """Set callbacks for RX events"""
+        # Set callbacks for all RX lanes
         for rx_lane in self.rx_lanes:
-            if on_packet_start:
-                rx_lane.on_hs_start = on_packet_start
-            if on_packet_end:
-                rx_lane.on_hs_end = on_packet_end
-            if on_data_received:
-                rx_lane.on_data_received = on_data_received
+            rx_lane.on_hs_start = on_packet_start
+            rx_lane.on_hs_end = on_packet_end
+            rx_lane.on_data_received = on_data_received
+
+    def get_signal_statistics(self) -> dict:
+        """Get signal quality statistics from all lanes"""
+        stats = {
+            'clock_lane': self.clock_rx.get_signal_statistics(),
+            'data_lanes': []
+        }
+
+        for rx_lane in self.rx_lanes:
+            stats['data_lanes'].append(rx_lane.get_signal_statistics())
+
+        return stats
+
+    def reset_signal_monitors(self):
+        """Reset signal quality monitoring on all lanes"""
+        self.clock_rx.reset_signal_monitor()
+        for rx_lane in self.rx_lanes:
+            rx_lane.reset_signal_monitor()

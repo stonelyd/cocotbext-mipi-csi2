@@ -310,15 +310,16 @@ async def test_dphy_signal_simulation(dut):
     await tb.rx_model.reset()
 
 
-'''
-'''
-'''
 @cocotb.test()
 async def test_multi_virtual_channel(dut):
     """Test multiple virtual channel support"""
+    setup_logging()
     tb = TB(dut)
     await tb.setup()
     await tb.configure_csi2(bit_rate_mbps=1000)
+
+    # Reset RX model to ensure clean state
+    await tb.rx_model.reset()
 
     # Send packets on different VCs
     for vc in range(4):
@@ -326,21 +327,41 @@ async def test_multi_virtual_channel(dut):
         await tb.tx_model.send_packet(packet)
         await Timer(1000, units="ns")  # Small delay between packets
 
-    await Timer(5000, units="ns")
+    # Wait for all transmissions to complete
+    # The transmission handler processes one packet at a time, so we need to wait for all 4
+    for _ in range(4):
+        await tb.tx_model.wait_transmission_complete()
+        await Timer(1000, units="ns")  # Small delay between transmissions
+
+    await Timer(5000, units="ns")  # Additional wait for RX processing
 
     # Check that RX model received packets from different VCs
     vcs_received = set()
-    while True:
+    packets_received = 0
+    max_packets = 10  # Limit to prevent infinite loop
+
+    while packets_received < max_packets:
         try:
             packet = await tb.rx_model.get_next_packet(timeout_ns=1000)
             if packet is not None:
                 vcs_received.add(packet.virtual_channel)
+                packets_received += 1
+                cocotb.log.info(f"Received packet {packets_received}: VC {packet.virtual_channel}, DT 0x{packet.data_type:02x}")
+            else:
+                break
         except cocotb.result.SimTimeoutError:
             break
 
+    # Get RX statistics for debugging
+    rx_stats = tb.rx_model.get_statistics()
+    cocotb.log.info(f"RX Statistics: {rx_stats}")
+
     assert len(vcs_received) > 0, "No packets were received by RX model"
 
-    cocotb.log.info(f"Multi virtual channel test passed: VCs {vcs_received} received")
+    cocotb.log.info(f"Multi virtual channel test passed: VCs {vcs_received} received ({packets_received} total packets)")
+
+    # Clean up
+    await tb.rx_model.reset()
 
 
 @cocotb.test()
@@ -464,6 +485,3 @@ async def test_timing_validation(dut):
     assert packets_received > 0, "No packets were received by RX model"
 
     cocotb.log.info(f"Timing validation test passed: {packets_received} packets received")
-'''
-'''
-'''

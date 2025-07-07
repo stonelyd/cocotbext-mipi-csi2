@@ -32,7 +32,7 @@ from collections import defaultdict
 from .bus import Csi2Bus, Csi2DPhyBus, Csi2CPhyBus
 from .config import Csi2Config, PhyType, DataType, VirtualChannel
 from .packet import Csi2Packet, Csi2ShortPacket, Csi2LongPacket, Csi2PacketParser
-from .phy import DPhyModel, CPhyModel
+from .phy import DPhyRxModel, CPhyModel
 from .exceptions import Csi2Exception, Csi2ProtocolError, Csi2PhyError, Csi2TimingError
 from .utils import setup_logging
 
@@ -161,7 +161,7 @@ class Csi2RxModel:
         if phy_model is not None:
             self.phy_model = phy_model
             # Determine bus type from PHY model
-            if isinstance(phy_model, DPhyModel):
+            if isinstance(phy_model, DPhyRxModel):
                 self.phy_bus = phy_model.bus
             elif isinstance(phy_model, CPhyModel):
                 self.phy_bus = phy_model.bus
@@ -174,7 +174,7 @@ class Csi2RxModel:
                     self.phy_bus = Csi2DPhyBus(bus.entity, config.lane_count)
                 else:
                     self.phy_bus = bus
-                self.phy_model = DPhyModel(self.phy_bus, config)
+                self.phy_model = DPhyRxModel(self.phy_bus, config)
             elif config.phy_type == PhyType.CPHY:
                 if not isinstance(bus, Csi2CPhyBus):
                     self.phy_bus = Csi2CPhyBus(bus.entity, config.trio_count)

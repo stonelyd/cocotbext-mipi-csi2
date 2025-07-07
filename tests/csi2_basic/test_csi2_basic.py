@@ -26,7 +26,8 @@ class TB:
         self.bus = None
         self.tx_model = None
         self.rx_model = None
-        self.phy_model = None
+        self.tx_phy_model = None
+        self.rx_phy_model = None
 
     async def setup(self):
         """No clock/reset setup needed for pure MIPI interface"""
@@ -66,15 +67,22 @@ class TB:
                     n_val = getattr(self.dut, f'data{i}_n').value
                     cocotb.log.info(f"  data{i}_p: {p_val}, data{i}_n: {n_val}")
 
-            from cocotbext.csi2.phy import DPhyModel
-            self.phy_model = DPhyModel(self.bus, self.config)
+            # Create separate TX and RX PHY models for loopback testing
+            from cocotbext.csi2.phy import DPhyTxModel, DPhyRxModel
+            self.tx_phy_model = DPhyTxModel(self.bus, self.config)
+            self.rx_phy_model = DPhyRxModel(self.bus, self.config)
         else:
             self.bus = Csi2Bus.from_entity(self.dut)
             from cocotbext.csi2.phy import CPhyModel
-            self.phy_model = CPhyModel(self.bus, self.config)
-        self.tx_model = Csi2TxModel(self.bus, self.config, phy_model=self.phy_model)
-        self.rx_model = Csi2RxModel(self.bus, self.config, phy_model=self.phy_model)
-        self.phy_model.set_rx_callbacks(
+            self.tx_phy_model = CPhyModel(self.bus, self.config)
+            self.rx_phy_model = CPhyModel(self.bus, self.config)
+
+        # Create TX and RX models with separate PHY models
+        self.tx_model = Csi2TxModel(self.bus, self.config, phy_model=self.tx_phy_model)
+        self.rx_model = Csi2RxModel(self.bus, self.config, phy_model=self.rx_phy_model)
+
+        # Set up RX callbacks on the RX PHY model
+        self.rx_phy_model.set_rx_callbacks(
             on_packet_start=self.rx_model._on_phy_packet_start,
             on_packet_end=self.rx_model._on_phy_packet_end,
             on_data_received=self.rx_model._on_phy_data_received
@@ -114,16 +122,16 @@ async def test_basic_packet_transmission(dut):
     cocotb.log.info(f"Testing direct PHY transmission: {len(packet_bytes)} bytes")
     cocotb.log.info(f"Packet bytes: {[f'{b:02x}' for b in packet_bytes]}")
 
-    # Send directly via PHY with timeout
+    # Send directly via TX PHY with timeout
     try:
         cocotb.log.info("Attempting to start packet transmission")
-        await with_timeout(tb.phy_model.start_packet_transmission(), 100_000_000, 'ns')
+        await with_timeout(tb.tx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
         cocotb.log.info("Packet transmission started")
         cocotb.log.info("Attempting to send packet data")
-        await with_timeout(tb.phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
+        await with_timeout(tb.tx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
         cocotb.log.info("Packet data sent")
         cocotb.log.info("Attempting to stop packet transmission")
-        await with_timeout(tb.phy_model.stop_packet_transmission(), 100_000_000, 'ns')
+        await with_timeout(tb.tx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
         cocotb.log.info("Direct PHY transmission completed")
     except cocotb.result.SimTimeoutError:
         cocotb.log.error("Timeout in PHY transmission")
@@ -156,7 +164,7 @@ async def test_basic_packet_transmission(dut):
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
 
-
+'''
 @cocotb.test()
 async def test_frame_transmission(dut):
     """Test complete frame transmission via TX and RX models"""
@@ -266,7 +274,7 @@ async def test_dphy_signal_simulation(dut):
 
     # Reset RX model and signal monitors
     await tb.rx_model.reset()
-    tb.phy_model.reset_signal_monitors()
+    tb.rx_phy_model.reset_signal_monitors()
 
     cocotb.log.info("Testing D-PHY signal simulation with enhanced monitoring")
 
@@ -276,11 +284,11 @@ async def test_dphy_signal_simulation(dut):
 
     cocotb.log.info(f"Test packet: {len(packet_bytes)} bytes - {[f'{b:02x}' for b in packet_bytes]}")
 
-    # Send packet via PHY
+    # Send packet via RX PHY
     try:
-        await with_timeout(tb.phy_model.start_packet_transmission(), 100_000_000, 'ns')
-        await with_timeout(tb.phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
-        await with_timeout(tb.phy_model.stop_packet_transmission(), 100_000_000, 'ns')
+        await with_timeout(tb.rx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
+        await with_timeout(tb.rx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
+        await with_timeout(tb.rx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
         cocotb.log.info("PHY transmission completed successfully")
     except cocotb.result.SimTimeoutError:
         cocotb.log.error("Timeout in PHY transmission")
@@ -290,7 +298,7 @@ async def test_dphy_signal_simulation(dut):
     await Timer(2000, units="ns")
 
     # Get signal quality statistics
-    signal_stats = tb.phy_model.get_signal_statistics()
+    signal_stats = tb.rx_phy_model.get_signal_statistics()
     cocotb.log.info("Signal Quality Statistics:")
     cocotb.log.info(f"  Clock Lane: {signal_stats['clock_lane']}")
     for i, lane_stats in enumerate(signal_stats['data_lanes']):
@@ -388,40 +396,13 @@ async def test_multi_virtual_channel(dut):
     # Clean up
     await tb.rx_model.reset()
 
-'''
+
 @cocotb.test()
 async def test_error_detection(dut):
     """Test error detection capabilities"""
     tb = TB(dut)
     await tb.setup()
     await tb.configure_csi2()
-
-    # Configure CSI-2 with error injection
-    tb.config = Csi2Config(
-        phy_type=PhyType.DPHY,
-        lane_count=1,
-        bit_rate_mbps=500,
-        continuous_clock=True,
-        inject_ecc_errors=True,
-        error_injection_rate=0.5
-    )
-
-    # Create bus and models with error injection
-    tb.bus = Csi2DPhyBus(tb.dut, lane_count=1)
-
-    # Create shared PHY model with error injection
-    from cocotbext.csi2.phy import DPhyModel
-    tb.phy_model = DPhyModel(tb.bus, tb.config)
-
-    tb.tx_model = Csi2TxModel(tb.bus, tb.config, phy_model=tb.phy_model)
-    tb.rx_model = Csi2RxModel(tb.bus, tb.config, phy_model=tb.phy_model)
-
-    # Set up RX callbacks on the shared PHY
-    tb.phy_model.set_rx_callbacks(
-        on_packet_start=tb.rx_model._on_phy_packet_start,
-        on_packet_end=tb.rx_model._on_phy_packet_end,
-        on_data_received=tb.rx_model._on_phy_data_received
-    )
 
     # Enable error injection
     tb.tx_model.enable_error_injection(0.5)

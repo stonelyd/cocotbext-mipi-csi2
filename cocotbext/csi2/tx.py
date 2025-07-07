@@ -32,7 +32,7 @@ from typing import List, Optional, Union, Callable
 from .bus import Csi2Bus, Csi2DPhyBus, Csi2CPhyBus
 from .config import Csi2Config, PhyType, DataType, VirtualChannel
 from .packet import Csi2Packet, Csi2ShortPacket, Csi2LongPacket, Csi2PacketBuilder
-from .phy import DPhyModel, CPhyModel
+from .phy import DPhyTxModel, CPhyModel
 from .exceptions import Csi2Exception, Csi2ProtocolError, Csi2PhyError
 from .utils import create_image_frame_sequence, generate_test_pattern
 
@@ -62,7 +62,7 @@ class Csi2TxModel:
         if phy_model is not None:
             self.phy_model = phy_model
             # Determine bus type from PHY model
-            if isinstance(phy_model, DPhyModel):
+            if isinstance(phy_model, DPhyTxModel):
                 self.phy_bus = phy_model.bus
             elif isinstance(phy_model, CPhyModel):
                 self.phy_bus = phy_model.bus
@@ -76,7 +76,7 @@ class Csi2TxModel:
                     self.phy_bus = Csi2DPhyBus(bus.entity, config.lane_count)
                 else:
                     self.phy_bus = bus
-                self.phy_model = DPhyModel(self.phy_bus, config)
+                self.phy_model = DPhyTxModel(self.phy_bus, config)
             elif config.phy_type == PhyType.CPHY:
                 if not isinstance(bus, Csi2CPhyBus):
                     # Create C-PHY bus if generic bus provided
@@ -131,7 +131,14 @@ class Csi2TxModel:
         if vc not in self.tx_queues:
             raise Csi2ProtocolError(f"Invalid virtual channel: {vc}")
 
+        # Debug: log packet details before queuing
+        packet_bytes = packet.to_bytes()
         self.logger.info(f"TX: Queuing packet: VC{vc} DT{packet.data_type:02X}")
+        self.logger.info(f"TX: Packet bytes (pre-queue): {[f'0x{b:02x}' for b in packet_bytes]}")
+        self.logger.info(f"TX: Packet data: {packet.data if hasattr(packet, 'data') else 'N/A'}")
+        self.logger.info(f"TX: Packet virtual_channel: {packet.virtual_channel}")
+        self.logger.info(f"TX: Packet data_type: {packet.data_type}")
+
         await self.tx_queues[vc].put(packet)
         self.logger.info(f"TX: Packet queued successfully")
 
@@ -302,7 +309,13 @@ class Csi2TxModel:
 
             if packet_to_send:
                 self.logger.info(f"TX: Transmitting 1 packet")
-                await self._transmit_packets([(vc_to_send, packet_to_send)])
+                try:
+                    self.logger.info(f"TX: About to call _transmit_packets with packet: VC{packet_to_send.virtual_channel} DT{packet_to_send.data_type:02X}")
+                    await self._transmit_packets([(vc_to_send, packet_to_send)])
+                    self.logger.info(f"TX: _transmit_packets completed successfully")
+                except Exception as e:
+                    self.logger.error(f"TX: Error in _transmit_packets: {e}")
+                    raise
             else:
                 # No packets to send, wait a bit
                 await Timer(100, units='ns')
@@ -314,14 +327,17 @@ class Csi2TxModel:
         Args:
             packets: List of (virtual_channel, packet) tuples
         """
+        self.logger.info(f"TX: _transmit_packets called with {len(packets)} packets")
         self.transmitting = True
 
         try:
             # Start PHY transmission
+            self.logger.info("TX: Starting PHY transmission")
             await self.phy_model.start_packet_transmission()
 
             # Send each packet
             for vc, packet in packets:
+                self.logger.info(f"TX: Processing packet {vc}: VC{packet.virtual_channel} DT{packet.data_type:02X}")
                 await self._transmit_single_packet(packet)
 
                 # Apply inter-packet spacing
@@ -330,6 +346,7 @@ class Csi2TxModel:
                     await Timer(spacing_ns, units='ns')
 
             # Stop PHY transmission
+            self.logger.info("TX: Stopping PHY transmission")
             await self.phy_model.stop_packet_transmission()
 
         except Exception as e:
@@ -346,6 +363,10 @@ class Csi2TxModel:
         Args:
             packet: Packet to transmit
         """
+        # Debug: log packet details before transmission
+        self.logger.info(f"TX: _transmit_single_packet called for packet: VC{packet.virtual_channel} DT{packet.data_type:02X}")
+        self.logger.info(f"TX: Packet data: {packet.data if hasattr(packet, 'data') else 'N/A'}")
+
         # Apply error injection if configured
         if self.config.error_injection_rate > 0:
             if random.random() < self.config.error_injection_rate:
@@ -356,6 +377,7 @@ class Csi2TxModel:
 
         # Convert packet to bytes
         packet_bytes = packet.to_bytes()
+        self.logger.info(f"TX: Packet bytes (transmit): {[f'0x{b:02x}' for b in packet_bytes]}")
 
         # Send via PHY layer
         self.logger.info(f"TX: Sending packet via PHY: VC{packet.virtual_channel} DT{packet.data_type:02X} {len(packet_bytes)} bytes")

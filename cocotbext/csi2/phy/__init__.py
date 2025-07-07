@@ -22,13 +22,23 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from .dphy import DPhyTx, DPhyRx, DPhyModel
+from .dphy import (
+    DPhyTxTransmitter, DPhyRxReceiver, DPhyTxModel, DPhyRxModel,
+    DPhyTx, DPhyRx, DPhyModel  # Legacy aliases
+)
 from .cphy import CPhyTx, CPhyRx, CPhyModel
 
 __all__ = [
+    # New D-PHY classes
+    "DPhyTxTransmitter",
+    "DPhyRxReceiver",
+    "DPhyTxModel",
+    "DPhyRxModel",
+    # Legacy D-PHY aliases
     "DPhyTx",
-    "DPhyRx", 
+    "DPhyRx",
     "DPhyModel",
+    # C-PHY classes
     "CPhyTx",
     "CPhyRx",
     "CPhyModel"

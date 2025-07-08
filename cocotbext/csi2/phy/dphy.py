@@ -163,6 +163,11 @@ class DPhyTxTransmitter:
         """Execute HS prepare sequence with improved timing"""
         self.logger.info(f"Lane {self.lane.name}: Starting HS prepare sequence")
 
+        #set LP-01 state for 50ns
+        self._set_lp_state(DPhyState.LP_01)
+        await Timer(50, units='ns')
+        self.logger.info(f"Lane {self.lane.name}: Set LP-01 state for {self.phy_config.t_lpx}ns")
+
         # Set LP-00 state
         self._set_lp_state(DPhyState.LP_00)
         self.logger.info(f"Lane {self.lane.name}: Set LP-00 state for {self.phy_config.t_hs_prepare}ns")
@@ -358,6 +363,23 @@ class DPhyRxReceiver:
             # In LP mode, decode LP state
             return self._decode_lp_state()
 
+    def _is_valid_state_transition(self, from_state: int, to_state: int) -> bool:
+        """Validate state transition according to D-PHY protocol rules"""
+        # LP_00 can only transition to HS states (HS_0 or HS_1)
+        if from_state == DPhyState.LP_00:
+            return to_state in [DPhyState.HS_0, DPhyState.HS_1]
+
+        # HS states can transition to any LP state (typically LP_11 for exit)
+        if from_state in [DPhyState.HS_0, DPhyState.HS_1]:
+            return to_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]
+
+        # Other LP states can transition to LP_00 (for HS entry preparation) or other LP states
+        if from_state in [DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]:
+            return to_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]
+
+        # Invalid from_state
+        return False
+
     def update_state(self):
         """Update current state and detect HS mode transitions"""
         previous_state = self.current_state
@@ -366,32 +388,36 @@ class DPhyRxReceiver:
         # Decode current state
         new_state = self._decode_current_state()
 
-        # Update current state
+        # Validate state transition before updating
         if new_state != -1:  # Valid state detected
-            self.current_state = new_state
+            if self._is_valid_state_transition(previous_state, new_state):
+                self.current_state = new_state
 
-            # Detect HS mode transitions
-            if not self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]:
-                # Entering HS mode
-                self.hs_active = True
-                self.lp_active = False
-                self.logger.info(f"Lane {self.lane.name}: Entering HS mode (state: {DPhyState.name(new_state)})")
+                # Detect HS mode transitions
+                if not self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]:
+                    # Entering HS mode
+                    self.hs_active = True
+                    self.lp_active = False
+                    self.logger.info(f"Lane {self.lane.name}: Entering HS mode (state: {DPhyState.name(new_state)})")
 
-                if self.on_hs_start:
-                    self.on_hs_start()
+                    if self.on_hs_start:
+                        self.on_hs_start()
 
-            elif self.hs_active and new_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]:
-                # Exiting HS mode
-                self.hs_active = False
-                self.lp_active = True
-                self.logger.info(f"Lane {self.lane.name}: Exiting HS mode, entering LP mode (state: {DPhyState.name(new_state)})")
+                elif self.hs_active and new_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]:
+                    # Exiting HS mode
+                    self.hs_active = False
+                    self.lp_active = True
+                    self.logger.info(f"Lane {self.lane.name}: Exiting HS mode, entering LP mode (state: {DPhyState.name(new_state)})")
 
-                if self.on_hs_end:
-                    self.on_hs_end()
+                    if self.on_hs_end:
+                        self.on_hs_end()
 
-            # Log state changes (but suppress HS-0/HS-1 transitions to reduce noise)
-            if previous_state != new_state and not (self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]):
-                self.logger.info(f"Lane {self.lane.name}: State change {DPhyState.name(previous_state)} -> {DPhyState.name(new_state)}")
+                # Log state changes (but suppress HS-0/HS-1 transitions to reduce noise)
+                if previous_state != new_state and not (self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]):
+                    self.logger.info(f"Lane {self.lane.name}: State change {DPhyState.name(previous_state)} -> {DPhyState.name(new_state)}")
+            # else:
+            #     # Invalid state transition - log warning but don't update state
+            #     self.logger.warning(f"Lane {self.lane.name}: Invalid state transition {DPhyState.name(previous_state)} -> {DPhyState.name(new_state)} (ignored)")
 
 
 class DPhyTxModel:

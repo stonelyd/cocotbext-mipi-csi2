@@ -650,9 +650,6 @@ class DPhyRxModel:
 
     async def _sample_data_lane(self, lane_idx: int):
         """Sample a specific data lane for HS data"""
-
-        self.data_rx[lane_idx].update_state()
-
         # Only sample if data monitoring is active
         if not self.hs_active:
             return
@@ -800,6 +797,17 @@ class DPhyRxModel:
         """Reset signal quality monitoring on all lanes"""
         # No longer using signal monitors
         pass
+
+    async def start_data_monitoring(self):
+        """Start monitoring data lanes for HS data"""
+        if not self.hs_active:
+            self.hs_active = True
+            self.logger.info("Starting data lane monitoring (clock-based sampling)")
+
+    async def stop_data_monitoring(self):
+        """Stop monitoring data lanes"""
+        self.hs_active = False
+        self.logger.info("Stopping data lane monitoring")
 
 
 # Legacy aliases for backward compatibility

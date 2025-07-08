@@ -666,6 +666,9 @@ class DPhyRxModel:
         self.hs_active = False
         self.packet_active = False
 
+        # Track HS state for each lane
+        self.lane_hs_active = {i: False for i in range(config.lane_count)}
+
         # Data buffers for each lane
         self.lane_buffers = {i: bytearray() for i in range(config.lane_count)}
         self.lane_byte_buffers = {i: 0 for i in range(config.lane_count)}
@@ -674,8 +677,41 @@ class DPhyRxModel:
         # Lane enable status
         self.enabled_lanes = set(range(config.lane_count))  # All lanes enabled by default
 
+        # Callbacks for the overall model
+        self.on_hs_start = None
+        self.on_hs_end = None
+        self.on_data_received = None
+
         # Start clock monitoring
         self._clock_monitor_task = cocotb.start_soon(self._monitor_clock_events())
+
+    async def _check_all_lanes_hs_active(self):
+        """Check if all enabled lanes are in HS state and update overall hs_active"""
+        all_hs_active = all(self.lane_hs_active[lane_idx] for lane_idx in self.enabled_lanes)
+
+        if all_hs_active and not self.hs_active:
+            self.hs_active = True
+            self.logger.info("All enabled data lanes in HS state - setting overall HS active")
+
+            # Trigger HS start callback
+            if self.on_hs_start:
+                # Handle both sync and async callbacks
+                if asyncio.iscoroutinefunction(self.on_hs_start):
+                    await self.on_hs_start()
+                else:
+                    self.on_hs_start()
+
+        elif not all_hs_active and self.hs_active:
+            self.hs_active = False
+            self.logger.info("Not all enabled data lanes in HS state - setting overall HS inactive")
+
+            # Trigger HS end callback
+            if self.on_hs_end:
+                # Handle both sync and async callbacks
+                if asyncio.iscoroutinefunction(self.on_hs_end):
+                    await self.on_hs_end()
+                else:
+                    self.on_hs_end()
 
 
     async def _monitor_clock_events(self):
@@ -734,11 +770,19 @@ class DPhyRxModel:
 
         await self.data_rx[lane_idx].update_state()
 
+        # Check if this lane has transitioned to HS state
+        lane_hs_active = self.data_rx[lane_idx].hs_active
+        if lane_hs_active != self.lane_hs_active[lane_idx]:
+            self.lane_hs_active[lane_idx] = lane_hs_active
+            self.logger.info(f"Lane {lane_idx} HS state changed to: {lane_hs_active}")
+
+            # Check if all enabled lanes are now in HS state
+            await self._check_all_lanes_hs_active()
+
         # Only sample if data monitoring is active
         if not self.hs_active:
             return
 
-        exit(0)
         rx_lane = self.data_rx[lane_idx]
 
         try:
@@ -871,6 +915,11 @@ class DPhyRxModel:
     def set_rx_callbacks(self, on_packet_start=None, on_packet_end=None,
                         on_data_received=None):
         """Set callbacks for RX events"""
+        # Set callbacks for the overall model
+        self.on_hs_start = on_packet_start
+        self.on_hs_end = on_packet_end
+        self.on_data_received = on_data_received
+
         # Set callbacks for clock lane
         self.clock_rx.on_hs_start = on_packet_start
         self.clock_rx.on_hs_end = on_packet_end
@@ -898,6 +947,21 @@ class DPhyRxModel:
         """Reset signal quality monitoring on all lanes"""
         # No longer using signal monitors
         pass
+
+    def reset_lane_hs_tracking(self):
+        """Reset HS state tracking for all lanes"""
+        for lane_idx in range(self.config.lane_count):
+            self.lane_hs_active[lane_idx] = False
+        self.hs_active = False
+        self.logger.info("Reset lane HS state tracking")
+
+    def get_lane_hs_status(self) -> dict:
+        """Get HS status for all lanes"""
+        return {
+            'overall_hs_active': self.hs_active,
+            'lane_hs_active': self.lane_hs_active.copy(),
+            'enabled_lanes': list(self.enabled_lanes)
+        }
 
 
 # Legacy aliases for backward compatibility

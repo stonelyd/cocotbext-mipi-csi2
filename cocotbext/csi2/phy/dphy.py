@@ -650,6 +650,9 @@ class DPhyRxModel:
 
     async def _sample_data_lane(self, lane_idx: int):
         """Sample a specific data lane for HS data"""
+
+        self.data_rx[lane_idx].update_state()
+
         # Only sample if data monitoring is active
         if not self.hs_active:
             return

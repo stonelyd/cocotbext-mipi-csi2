@@ -306,6 +306,11 @@ class DPhyRxReceiver:
         self.on_hs_end = None
         self.on_data_received = None
 
+        # Timing tracking for automatic LP_00 to HS transition
+        self.lp00_entry_time = None
+        self.hs_transition_task = None
+        self.ui_ns = 1000.0 / config.bit_rate_mbps  # Unit interval in nanoseconds
+
     def _decode_lp_state(self) -> int:
         """Decode current LP state from signals"""
         try:
@@ -380,7 +385,34 @@ class DPhyRxReceiver:
         # Invalid from_state
         return False
 
-    def update_state(self):
+    async def _schedule_hs_transition(self):
+        """Schedule automatic transition from LP_00 to HS after timing delay"""
+        # Calculate delay: 86ns + 6*UI
+        delay_ns = 86 + 6 * self.ui_ns
+        self.logger.info(f"Lane {self.lane.name}: Scheduling HS transition in {delay_ns:.2f}ns (86ns + 6*{self.ui_ns:.2f}ns)")
+
+        # Wait for the calculated delay
+        await Timer(int(delay_ns), units='ns')
+
+        # Check if we're still in LP_00 state (transition hasn't been cancelled)
+        if self.current_state == DPhyState.LP_00 and not self.hs_active:
+            self.logger.info(f"Lane {self.lane.name}: Executing automatic LP_00 -> HS transition")
+
+            # Set HS mode
+            self.hs_active = True
+            self.lp_active = False
+
+            # Trigger HS start callback
+            if self.on_hs_start:
+                # Handle both sync and async callbacks
+                if asyncio.iscoroutinefunction(self.on_hs_start):
+                    await self.on_hs_start()
+                else:
+                    self.on_hs_start()
+        else:
+            self.logger.debug(f"Lane {self.lane.name}: HS transition cancelled (no longer in LP_00 or already in HS mode)")
+
+    async def update_state(self):
         """Update current state and detect HS mode transitions"""
         previous_state = self.current_state
         previous_hs_active = self.hs_active
@@ -393,15 +425,34 @@ class DPhyRxReceiver:
             if self._is_valid_state_transition(previous_state, new_state):
                 self.current_state = new_state
 
-                # Detect HS mode transitions
-                if not self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]:
-                    # Entering HS mode
+                # Handle LP_00 entry - schedule automatic HS transition
+                if new_state == DPhyState.LP_00 and previous_state != DPhyState.LP_00:
+                    self.logger.info(f"Lane {self.lane.name}: Entered LP_00, scheduling automatic HS transition")
+
+                    # Cancel any existing transition task
+                    if self.hs_transition_task and not self.hs_transition_task.done():
+                        self.hs_transition_task.cancel()
+
+                    # Schedule new HS transition
+                    self.hs_transition_task = cocotb.start_soon(self._schedule_hs_transition())
+
+                # Detect immediate HS mode transitions (from signal changes)
+                elif not self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]:
+                    # Cancel any pending automatic transition
+                    if self.hs_transition_task and not self.hs_transition_task.done():
+                        self.hs_transition_task.cancel()
+
+                    # Entering HS mode immediately
                     self.hs_active = True
                     self.lp_active = False
-                    self.logger.info(f"Lane {self.lane.name}: Entering HS mode (state: {DPhyState.name(new_state)})")
+                    self.logger.info(f"Lane {self.lane.name}: Entering HS mode immediately (state: {DPhyState.name(new_state)})")
 
                     if self.on_hs_start:
-                        self.on_hs_start()
+                        # Handle both sync and async callbacks
+                        if asyncio.iscoroutinefunction(self.on_hs_start):
+                            await self.on_hs_start()
+                        else:
+                            self.on_hs_start()
 
                 elif self.hs_active and new_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]:
                     # Exiting HS mode
@@ -410,7 +461,11 @@ class DPhyRxReceiver:
                     self.logger.info(f"Lane {self.lane.name}: Exiting HS mode, entering LP mode (state: {DPhyState.name(new_state)})")
 
                     if self.on_hs_end:
-                        self.on_hs_end()
+                        # Handle both sync and async callbacks
+                        if asyncio.iscoroutinefunction(self.on_hs_end):
+                            await self.on_hs_end()
+                        else:
+                            self.on_hs_end()
 
                 # Log state changes (but suppress HS-0/HS-1 transitions to reduce noise)
                 if previous_state != new_state and not (self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]):
@@ -677,12 +732,13 @@ class DPhyRxModel:
     async def _sample_data_lane(self, lane_idx: int):
         """Sample a specific data lane for HS data"""
 
-        self.data_rx[lane_idx].update_state()
+        await self.data_rx[lane_idx].update_state()
 
         # Only sample if data monitoring is active
         if not self.hs_active:
             return
 
+        exit(0)
         rx_lane = self.data_rx[lane_idx]
 
         try:
@@ -715,6 +771,14 @@ class DPhyRxModel:
 
             self.logger.debug(f"Lane {lane_idx}: Received byte 0x{byte_val:02x}")
 
+            # Forward data to RX callbacks
+            if self.on_data_received:
+                # Handle both sync and async callbacks
+                if asyncio.iscoroutinefunction(self.on_data_received):
+                    await self.on_data_received(byte_val)
+                else:
+                    self.on_data_received(byte_val)
+
             # Reset for next byte
             self.lane_byte_buffers[lane_idx] = 0
             self.lane_bit_counts[lane_idx] = 0
@@ -727,6 +791,14 @@ class DPhyRxModel:
             # Process packet data for lane demuxing and decoding
             packet_data = bytes(self.lane_buffers[lane_idx])
             await self._process_packet_data(lane_idx, packet_data)
+
+            # Forward remaining data to RX callbacks
+            if self.on_data_received and packet_data:
+                # Handle both sync and async callbacks
+                if asyncio.iscoroutinefunction(self.on_data_received):
+                    await self.on_data_received(packet_data)
+                else:
+                    self.on_data_received(packet_data)
 
             # Clear buffer
             self.lane_buffers[lane_idx].clear()
@@ -826,17 +898,6 @@ class DPhyRxModel:
         """Reset signal quality monitoring on all lanes"""
         # No longer using signal monitors
         pass
-
-    async def start_data_monitoring(self):
-        """Start monitoring data lanes for HS data"""
-        if not self.hs_active:
-            self.hs_active = True
-            self.logger.info("Starting data lane monitoring (clock-based sampling)")
-
-    async def stop_data_monitoring(self):
-        """Stop monitoring data lanes"""
-        self.hs_active = False
-        self.logger.info("Stopping data lane monitoring")
 
 
 # Legacy aliases for backward compatibility

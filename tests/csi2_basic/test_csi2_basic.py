@@ -100,20 +100,20 @@ async def test_basic_packet_transmission(dut):
     # Reset RX model to ensure clean state
     await tb.rx_model.reset()
 
-    # Test simple signal setting first
-    cocotb.log.info("Testing simple signal setting")
+    # # Test simple signal setting first
+    # cocotb.log.info("Testing simple signal setting")
 
-    # Set some signals manually to test
-    if hasattr(tb.dut, 'data0_p'):
-        tb.dut.data0_p.value = 1
-        tb.dut.data0_n.value = 0
-        cocotb.log.info("Set data0_p=1, data0_n=0")
-        await Timer(100, units="ns")
+    # # Set some signals manually to test
+    # if hasattr(tb.dut, 'data0_p'):
+    #     tb.dut.data0_p.value = 1
+    #     tb.dut.data0_n.value = 0
+    #     cocotb.log.info("Set data0_p=1, data0_n=0")
+    #     await Timer(100, units="ns")
 
-        tb.dut.data0_p.value = 0
-        tb.dut.data0_n.value = 1
-        cocotb.log.info("Set data0_p=0, data0_n=1")
-        await Timer(100, units="ns")
+    #     tb.dut.data0_p.value = 0
+    #     tb.dut.data0_n.value = 1
+    #     cocotb.log.info("Set data0_p=0, data0_n=1")
+    #     await Timer(100, units="ns")
 
     # Test direct PHY transmission with timeout
     frame_start = Csi2ShortPacket.frame_start(virtual_channel=0, frame_number=1)

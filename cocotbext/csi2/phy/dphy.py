@@ -358,6 +358,41 @@ class DPhyRxReceiver:
             # In LP mode, decode LP state
             return self._decode_lp_state()
 
+    def update_state(self):
+        """Update current state and detect HS mode transitions"""
+        previous_state = self.current_state
+        previous_hs_active = self.hs_active
+
+        # Decode current state
+        new_state = self._decode_current_state()
+
+        # Update current state
+        if new_state != -1:  # Valid state detected
+            self.current_state = new_state
+
+            # Detect HS mode transitions
+            if not self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]:
+                # Entering HS mode
+                self.hs_active = True
+                self.lp_active = False
+                self.logger.info(f"Lane {self.lane.name}: Entering HS mode (state: {DPhyState.name(new_state)})")
+
+                if self.on_hs_start:
+                    self.on_hs_start()
+
+            elif self.hs_active and new_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]:
+                # Exiting HS mode
+                self.hs_active = False
+                self.lp_active = True
+                self.logger.info(f"Lane {self.lane.name}: Exiting HS mode, entering LP mode (state: {DPhyState.name(new_state)})")
+
+                if self.on_hs_end:
+                    self.on_hs_end()
+
+            # Log state changes (but suppress HS-0/HS-1 transitions to reduce noise)
+            if previous_state != new_state and not (self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]):
+                self.logger.info(f"Lane {self.lane.name}: State change {DPhyState.name(previous_state)} -> {DPhyState.name(new_state)}")
+
 
 class DPhyTxModel:
     """D-PHY Transmitter Model for multi-lane PHY"""
@@ -561,6 +596,7 @@ class DPhyRxModel:
         # Start clock monitoring
         self._clock_monitor_task = cocotb.start_soon(self._monitor_clock_events())
 
+
     async def _monitor_clock_events(self):
         """Monitor clock lane for positive/negative edge events"""
         self.logger.info("Starting clock event monitoring")
@@ -590,8 +626,6 @@ class DPhyRxModel:
                     # Detect clock events: p going positive, n going negative
                     if prev_p == 0 and current_p == 1:  # p going positive
                         self.logger.debug(f"Clock event: p going positive at {current_time}ns")
-                        if self.on_clock_received:
-                            await self.on_clock_received('p_positive', current_time)
 
                         # Sample all enabled data lanes on clock event
                         for lane_idx in self.enabled_lanes:
@@ -599,8 +633,6 @@ class DPhyRxModel:
 
                     if prev_n == 1 and current_n == 0:  # n going negative
                         self.logger.debug(f"Clock event: n going negative at {current_time}ns")
-                        if self.on_clock_received:
-                            await self.on_clock_received('n_negative', current_time)
 
                         # Sample all enabled data lanes on clock event
                         for lane_idx in self.enabled_lanes:
@@ -615,8 +647,12 @@ class DPhyRxModel:
                 # Brief pause before retrying
                 await Timer(1, units='ns')
 
+
     async def _sample_data_lane(self, lane_idx: int):
         """Sample a specific data lane for HS data"""
+
+        self.data_rx[lane_idx].update_state()
+
         # Only sample if data monitoring is active
         if not self.hs_active:
             return
@@ -764,17 +800,6 @@ class DPhyRxModel:
         """Reset signal quality monitoring on all lanes"""
         # No longer using signal monitors
         pass
-
-    async def start_data_monitoring(self):
-        """Start monitoring data lanes for HS data"""
-        if not self.hs_active:
-            self.hs_active = True
-            self.logger.info("Starting data lane monitoring (clock-based sampling)")
-
-    async def stop_data_monitoring(self):
-        """Stop monitoring data lanes"""
-        self.hs_active = False
-        self.logger.info("Stopping data lane monitoring")
 
 
 # Legacy aliases for backward compatibility

@@ -128,6 +128,9 @@ class DPhyTxTransmitter:
         self.bit_period_ns = config.get_bit_period_ns()
         self.byte_period_ns = config.get_byte_period_ns()
 
+        # For DDR mode, we need to send at half the bit period
+        self.ddr_bit_period_ns = self.bit_period_ns / 2
+
         # Initialize signals to LP-11 state
         self._set_lp_state(DPhyState.LP_11)
         self.logger.info(f"Lane {lane.name}: TX signals initialized to LP-11 state")
@@ -222,8 +225,8 @@ class DPhyTxTransmitter:
         self.logger.info(f"Lane {self.lane.name}: HS data transmission complete")
 
     async def _send_hs_byte(self, byte_val: int):
-        """Send a single byte in HS mode"""
-        # Send bits LSB first
+        """Send a single byte in HS mode at DDR rate"""
+        # Send bits LSB first at DDR rate (half the bit period)
         for bit_pos in range(8):
             bit_val = (byte_val >> bit_pos) & 1
 
@@ -236,7 +239,8 @@ class DPhyTxTransmitter:
                 self.sig_p.value = 0
                 self.sig_n.value = 1
 
-            await Timer(int(self.bit_period_ns), units='ns')
+            # Use DDR timing (half the bit period)
+            await Timer(int(self.ddr_bit_period_ns), units='ns')
 
     async def send_lp_sequence(self, sequence: List[int]):
         """Send LP sequence"""
@@ -674,6 +678,11 @@ class DPhyRxModel:
         self.lane_byte_buffers = {i: 0 for i in range(config.lane_count)}
         self.lane_bit_counts = {i: 0 for i in range(config.lane_count)}
 
+        # Protocol overhead tracking
+        self.sync_sequence_detected = {i: False for i in range(config.lane_count)}
+        self.overhead_bytes_skipped = {i: 0 for i in range(config.lane_count)}
+        self.sync_sequence = 0xB8  # D-PHY sync sequence
+
         # Lane enable status
         self.enabled_lanes = set(range(config.lane_count))  # All lanes enabled by default
 
@@ -811,9 +820,31 @@ class DPhyRxModel:
         if self.lane_bit_counts[lane_idx] >= 8:
             # Complete byte received
             byte_val = self.lane_byte_buffers[lane_idx]
-            self.lane_buffers[lane_idx].append(byte_val)
 
-            self.logger.debug(f"Lane {lane_idx}: Received byte 0x{byte_val:02x}")
+            # Check if this is the sync sequence
+            if byte_val == self.sync_sequence and not self.sync_sequence_detected[lane_idx]:
+                self.sync_sequence_detected[lane_idx] = True
+                self.overhead_bytes_skipped[lane_idx] += 1
+                self.logger.info(f"Lane {lane_idx}: Detected sync sequence 0x{byte_val:02x}, skipping protocol overhead")
+
+                # Reset for next byte without forwarding
+                self.lane_byte_buffers[lane_idx] = 0
+                self.lane_bit_counts[lane_idx] = 0
+                return
+
+            # Skip a few bytes after sync sequence (protocol overhead)
+            if self.sync_sequence_detected[lane_idx] and self.overhead_bytes_skipped[lane_idx] < 4:
+                self.overhead_bytes_skipped[lane_idx] += 1
+                self.logger.debug(f"Lane {lane_idx}: Skipping protocol overhead byte 0x{byte_val:02x} ({self.overhead_bytes_skipped[lane_idx]}/4)")
+
+                # Reset for next byte without forwarding
+                self.lane_byte_buffers[lane_idx] = 0
+                self.lane_bit_counts[lane_idx] = 0
+                return
+
+            # After sync sequence and overhead, forward actual packet data
+            self.lane_buffers[lane_idx].append(byte_val)
+            self.logger.debug(f"Lane {lane_idx}: Received packet byte 0x{byte_val:02x}")
 
             # Forward data to RX callbacks
             if self.on_data_received:
@@ -844,8 +875,10 @@ class DPhyRxModel:
                 else:
                     self.on_data_received(packet_data)
 
-            # Clear buffer
+            # Clear buffer and reset sync detection for next packet
             self.lane_buffers[lane_idx].clear()
+            self.sync_sequence_detected[lane_idx] = False
+            self.overhead_bytes_skipped[lane_idx] = 0
 
     async def _process_packet_data(self, lane_idx: int, packet_data: bytes):
         """Process packet data for lane demuxing and packet decoding"""
@@ -954,6 +987,13 @@ class DPhyRxModel:
             self.lane_hs_active[lane_idx] = False
         self.hs_active = False
         self.logger.info("Reset lane HS state tracking")
+
+    def reset_sync_sequence_detection(self):
+        """Reset sync sequence detection for all lanes"""
+        for lane_idx in range(self.config.lane_count):
+            self.sync_sequence_detected[lane_idx] = False
+            self.overhead_bytes_skipped[lane_idx] = 0
+        self.logger.info("Reset sync sequence detection for all lanes")
 
     def get_lane_hs_status(self) -> dict:
         """Get HS status for all lanes"""

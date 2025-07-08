@@ -586,15 +586,25 @@ class DPhyRxModel:
                 # Only process if signals actually changed
                 if current_p != prev_p or current_n != prev_n:
                     current_time = cocotb.utils.get_sim_time('ns')
-                    exit()
 
                     # Detect clock events: p going positive, n going negative
                     if prev_p == 0 and current_p == 1:  # p going positive
                         self.logger.debug(f"Clock event: p going positive at {current_time}ns")
+                        if self.on_clock_received:
+                            await self.on_clock_received('p_positive', current_time)
+
+                        # Sample all enabled data lanes on clock event
+                        for lane_idx in self.enabled_lanes:
+                            await self._sample_data_lane(lane_idx)
 
                     if prev_n == 1 and current_n == 0:  # n going negative
                         self.logger.debug(f"Clock event: n going negative at {current_time}ns")
+                        if self.on_clock_received:
+                            await self.on_clock_received('n_negative', current_time)
 
+                        # Sample all enabled data lanes on clock event
+                        for lane_idx in self.enabled_lanes:
+                            await self._sample_data_lane(lane_idx)
 
                     # Update previous values
                     prev_p = current_p
@@ -605,38 +615,12 @@ class DPhyRxModel:
                 # Brief pause before retrying
                 await Timer(1, units='ns')
 
-    async def _monitor_data_lanes(self):
-        """Monitor enabled data lanes for HS data and packet decoding"""
-        self.logger.info("Starting data lane monitoring")
-
-        while self.hs_active:
-            try:
-                # Wait for any edge on any enabled data lane
-                edge_triggers = []
-                for lane_idx in self.enabled_lanes:
-                    rx_lane = self.data_rx[lane_idx]
-                    edge_triggers.extend([
-                        RisingEdge(rx_lane.sig_p),
-                        FallingEdge(rx_lane.sig_p),
-                        RisingEdge(rx_lane.sig_n),
-                        FallingEdge(rx_lane.sig_n)
-                    ])
-
-                if edge_triggers:
-                    await First(*edge_triggers)
-
-                # Sample all enabled lanes
-                for lane_idx in self.enabled_lanes:
-                    await self._sample_data_lane(lane_idx)
-
-            except Exception as e:
-                self.logger.error(f"Error in data lane monitoring: {e}")
-                break
-
-        self.logger.info("Data lane monitoring ended")
-
     async def _sample_data_lane(self, lane_idx: int):
         """Sample a specific data lane for HS data"""
+        # Only sample if data monitoring is active
+        if not self.hs_active:
+            return
+
         rx_lane = self.data_rx[lane_idx]
 
         try:
@@ -732,18 +716,6 @@ class DPhyRxModel:
         """Get the set of enabled lane indices"""
         return self.enabled_lanes.copy()
 
-    async def start_data_monitoring(self):
-        """Start monitoring data lanes for HS data"""
-        if not self.hs_active:
-            self.hs_active = True
-            self.logger.info("Starting data lane monitoring")
-            await self._monitor_data_lanes()
-
-    async def stop_data_monitoring(self):
-        """Stop monitoring data lanes"""
-        self.hs_active = False
-        self.logger.info("Stopping data lane monitoring")
-
     def get_received_data(self) -> bytes:
         """Collect received data from all RX lanes"""
         if not self.data_rx:
@@ -792,6 +764,17 @@ class DPhyRxModel:
         """Reset signal quality monitoring on all lanes"""
         # No longer using signal monitors
         pass
+
+    async def start_data_monitoring(self):
+        """Start monitoring data lanes for HS data"""
+        if not self.hs_active:
+            self.hs_active = True
+            self.logger.info("Starting data lane monitoring (clock-based sampling)")
+
+    async def stop_data_monitoring(self):
+        """Stop monitoring data lanes"""
+        self.hs_active = False
+        self.logger.info("Stopping data lane monitoring")
 
 
 # Legacy aliases for backward compatibility

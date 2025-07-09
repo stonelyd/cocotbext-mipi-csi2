@@ -32,6 +32,22 @@ from enum import Enum
 from ..config import Csi2Config, Csi2PhyConfig
 from ..bus import Csi2DPhyBus
 from ..exceptions import Csi2PhyError, Csi2TimingError
+from ..packet import Csi2PacketHeader, DataType
+
+
+def _is_short_packet_type(data_type: int) -> bool:
+    """Check if data type indicates short packet. Based on MIPI CSI-2 Spec."""
+    # Generic short packets (Table 12 in CSI-2 v4.0.1)
+    if 0x08 <= data_type <= 0x0F:
+        return True
+    # Synchronization short packets (Table 11 in CSI-2 v4.0.1)
+    short_sync_types = {
+        DataType.FRAME_START.value,
+        DataType.FRAME_END.value,
+        DataType.LINE_START.value,
+        DataType.LINE_END.value,
+    }
+    return data_type in short_sync_types
 
 
 class DPhyLaneType(Enum):
@@ -169,11 +185,12 @@ class DPhyTxTransmitter:
         #set LP-01 state for 50ns
         self._set_lp_state(DPhyState.LP_01)
         await Timer(50, units='ns')
-        self.logger.info(f"Lane {self.lane.name}: Set LP-01 state for {self.phy_config.t_lpx}ns")
+        self.logger.info(f"Lane {self.lane.name}: Set LP-01 state for 50.0ns")
 
         # Set LP-00 state
         self._set_lp_state(DPhyState.LP_00)
-        self.logger.info(f"Lane {self.lane.name}: Set LP-00 state for {self.phy_config.t_hs_prepare}ns")
+        await Timer(60, units='ns')
+        self.logger.info(f"Lane {self.lane.name}: Set LP-00 state for 60.0ns")
 
         # Wait for HS prepare time
         await Timer(int(self.phy_config.t_hs_prepare), units='ns')
@@ -197,6 +214,11 @@ class DPhyTxTransmitter:
     async def _hs_exit_sequence(self):
         """Execute HS exit sequence"""
         self.logger.debug(f"Lane {self.lane.name}: Starting HS exit")
+
+        # Drive HS-0 state during HS trail period as per D-PHY spec
+        self.sig_p.value = 0
+        self.sig_n.value = 1
+        self.current_state = DPhyState.HS_0
 
         # HS trail
         await Timer(self.phy_config.t_hs_trail, units='ns')
@@ -676,6 +698,9 @@ class DPhyRxModel:
         self.lane_processing_packet = {i: False for i in range(config.lane_count)}
         self.hs_active = False
 
+        # Packet length awareness
+        self.lane_packet_lengths = {i: 0 for i in range(config.lane_count)}
+
         # Sync sequence (SoT) from D-PHY spec v2.5, section 6.4.2
         self.sync_sequence_bits = 0xB8
 
@@ -736,11 +761,40 @@ class DPhyRxModel:
             self.lane_bit_counts[lane_idx] += 1
             if self.lane_bit_counts[lane_idx] >= 8:
                 byte_val = self.lane_byte_buffers[lane_idx]
-                self.lane_buffers[lane_idx].append(byte_val)
-                if self.on_data_received:
-                    await cocotb.start(self.on_data_received(byte_val))
+                await self._process_byte(lane_idx, byte_val)
                 self.lane_byte_buffers[lane_idx] = 0
                 self.lane_bit_counts[lane_idx] = 0
+
+    async def _process_byte(self, lane_idx: int, byte_val: int):
+        """Process a fully assembled byte, with packet-awareness."""
+        packet_len = self.lane_packet_lengths.get(lane_idx, 0)
+        bytes_recvd = len(self.lane_buffers[lane_idx])
+
+        # If we already know the length and have received it all, do nothing.
+        if packet_len > 0 and bytes_recvd >= packet_len:
+            self.logger.debug(f"Lane {lane_idx}: Ignoring trailing byte, packet complete.")
+            return
+
+        # Buffer and forward the valid byte
+        self.lane_buffers[lane_idx].append(byte_val)
+        if self.on_data_received:
+            await cocotb.start(self.on_data_received(byte_val))
+
+        # If header is now complete, determine full packet length
+        if len(self.lane_buffers[lane_idx]) == 4:
+            header_bytes = bytes(self.lane_buffers[lane_idx])
+            try:
+                header = Csi2PacketHeader.from_bytes(header_bytes)
+                if _is_short_packet_type(header.data_type):
+                    self.lane_packet_lengths[lane_idx] = 4
+                    self.logger.info(f"Lane {lane_idx}: Short packet detected. Expecting 4 bytes total.")
+                else:  # Long packet
+                    length = 4 + header.word_count + 2
+                    self.lane_packet_lengths[lane_idx] = length
+                    self.logger.info(f"Lane {lane_idx}: Long packet detected. WC={header.word_count}. Expecting {length} bytes total.")
+            except Exception as e:
+                self.logger.error(f"Lane {lane_idx}: Header parse failed: {e}. Cannot determine packet length.")
+                self.lane_packet_lengths[lane_idx] = 0  # Reset to unknown
 
     async def _handle_packet_end(self, lane_idx: int):
         """Handle end of packet on a specific lane."""
@@ -766,6 +820,7 @@ class DPhyRxModel:
         self.lane_processing_packet[lane_idx] = False
         self.lane_byte_buffers[lane_idx] = 0
         self.lane_bit_counts[lane_idx] = 0
+        self.lane_packet_lengths[lane_idx] = 0
 
     def reset(self):
         """Reset the entire receiver model state."""

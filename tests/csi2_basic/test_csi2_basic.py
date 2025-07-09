@@ -150,6 +150,7 @@ async def test_basic_packet_transmission(dut):
 
         assert received_packet is not None, "No packet received"
         assert isinstance(received_packet, Csi2ShortPacket), "Expected short packet"
+        assert received_packet.header.validate_ecc(), "Received packet ECC validation failed"
         assert received_packet.data_type == DataType.FRAME_START.value, "Expected frame start packet"
         assert received_packet.virtual_channel == 0, "Expected VC=0"
 

@@ -652,151 +652,53 @@ class DPhyRxModel:
             t_hs_trail=config.t_hs_trail_ns,
             t_hs_exit=config.t_hs_exit_ns
         )
-
-        # Create lanes with clear identification
-        self.clock_lane = DPhyLane(DPhyLaneType.CLOCK)  # index ignored
-        self.data_lanes = [DPhyLane(DPhyLaneType.DATA, i) for i in range(config.lane_count)]
-
-        # Create receivers
-        self.clock_rx = DPhyRxReceiver(bus, config, self.phy_config, self.clock_lane)
-        self.data_rx = [DPhyRxReceiver(bus, config, self.phy_config, lane) for lane in self.data_lanes]
-
-        # For backward compatibility, create rx_lanes list (only data lanes)
-        self.rx_lanes = self.data_rx
-
         self.logger = logging.getLogger('cocotbext.csi2.dphy.rx_model')
 
-        # Data monitoring state
-        self.hs_active = False
-        self.packet_active = False
+        # Create receivers for clock and data lanes
+        self.clock_lane = DPhyLane(DPhyLaneType.CLOCK)
+        self.data_lanes = [DPhyLane(DPhyLaneType.DATA, i) for i in range(config.lane_count)]
+        # The DPhyRxReceiver class is a low-level utility; we don't need instances for the model logic itself
+        # self.clock_rx = DPhyRxReceiver(bus, config, self.phy_config, self.clock_lane)
+        # self.data_rx = [DPhyRxReceiver(bus, config, self.phy_config, lane) for lane in self.data_lanes]
 
-        # Track HS state for each lane
-        self.lane_hs_active = {i: False for i in range(config.lane_count)}
-
-        # Data buffers for each lane
-        self.lane_buffers = {i: bytearray() for i in range(config.lane_count)}
-        self.lane_byte_buffers = {i: 0 for i in range(config.lane_count)}
-        self.lane_bit_counts = {i: 0 for i in range(config.lane_count)}
-
-        # Bit alignment tracking for sync sequence detection
-        self.lane_bit_shifters = {i: 0 for i in range(config.lane_count)}  # 16-bit sliding window for sync detection
-        self.lane_sync_aligned = {i: False for i in range(config.lane_count)}  # Whether sync alignment is found
-        self.lane_sync_shift = {i: 0 for i in range(config.lane_count)}  # Bit shift offset for alignment
-        self.sync_sequence_bits = 0xB8  # D-PHY sync sequence: 00011101 (LSB first)
-        self.sync_sequence_mask = 0xFF  # 8-bit mask for sync sequence
-
-        # Protocol overhead tracking
-        self.sync_sequence_detected = {i: False for i in range(config.lane_count)}
-        self.overhead_bytes_skipped = {i: 0 for i in range(config.lane_count)}
-        self.sync_sequence = 0xB8  # D-PHY sync sequence (actual received value)
-
-        # Lane enable status
-        self.enabled_lanes = set(range(config.lane_count))  # All lanes enabled by default
-
-        # Callbacks for the overall model
-        self.on_hs_start = None
-        self.on_hs_end = None
+        # Callbacks
+        self.on_packet_start = None
+        self.on_packet_end = None
         self.on_data_received = None
 
-        # Start clock monitoring
+        # Lane-specific buffers and state tracking
+        self.lane_buffers = {i: [] for i in range(config.lane_count)}
+        self.lane_bit_shifters = {i: 0 for i in range(config.lane_count)}
+        self.lane_byte_buffers = {i: 0 for i in range(config.lane_count)}
+        self.lane_bit_counts = {i: 0 for i in range(config.lane_count)}
+        self.lane_sync_aligned = {i: False for i in range(config.lane_count)}
+        self.lane_sync_shift = {i: 0 for i in range(config.lane_count)}
+        self.lane_processing_packet = {i: False for i in range(config.lane_count)}
+        self.hs_active = False
+
+        # Sync sequence (SoT) from D-PHY spec v2.5, section 6.4.2
+        self.sync_sequence_bits = 0xB8
+
+        # Lane enable status
+        self.enabled_lanes = set(range(config.lane_count))
+
+        # Start monitoring tasks
         self._clock_monitor_task = cocotb.start_soon(self._monitor_clock_events())
 
-    async def _check_all_lanes_hs_active(self):
-        """Check if all enabled lanes are in HS state and update overall hs_active"""
-        all_hs_active = all(self.lane_hs_active[lane_idx] for lane_idx in self.enabled_lanes)
-
-        if all_hs_active and not self.hs_active:
-            self.hs_active = True
-            self.logger.info("All enabled data lanes in HS state - setting overall HS active")
-
-            # Trigger HS start callback
-            if self.on_hs_start:
-                # Handle both sync and async callbacks
-                if asyncio.iscoroutinefunction(self.on_hs_start):
-                    await self.on_hs_start()
-                else:
-                    self.on_hs_start()
-
-        elif not all_hs_active and self.hs_active:
-            self.hs_active = False
-            self.logger.info("Not all enabled data lanes in HS state - setting overall HS inactive")
-
-            # Trigger HS end callback
-            if self.on_hs_end:
-                # Handle both sync and async callbacks
-                if asyncio.iscoroutinefunction(self.on_hs_end):
-                    await self.on_hs_end()
-                else:
-                    self.on_hs_end()
-
-
     async def _monitor_clock_events(self):
-        """Monitor clock lane for positive/negative edge events"""
-        self.logger.info("Starting clock event monitoring")
-
+        """Monitor clock lane for edge events"""
         while True:
-            try:
-                # Wait for any edge on either signal
-                await First(
-                    RisingEdge(self.clock_rx.sig_p),
-                    FallingEdge(self.clock_rx.sig_p),
-                    RisingEdge(self.clock_rx.sig_n),
-                    FallingEdge(self.clock_rx.sig_n)
-                )
-
-                # Get current signal values
-                current_p = int(self.clock_rx.sig_p.value)
-                current_n = int(self.clock_rx.sig_n.value)
-                current_time = cocotb.utils.get_sim_time('ns')
-
-                # Detect clock events: p going positive, n going negative
-                if current_p == 1 and current_n == 0:  # p going positive
-                    self.logger.debug(f"Clock event: p going positive at {current_time}ns")
-
-                    # Sample all enabled data lanes on clock event
-                    for lane_idx in self.enabled_lanes:
-                        await self._sample_data_lane(lane_idx)
-
-                if current_p == 0 and current_n == 1:  # n going negative
-                    self.logger.debug(f"Clock event: n going negative at {current_time}ns")
-
-                    # Sample all enabled data lanes on clock event
-                    for lane_idx in self.enabled_lanes:
-                        await self._sample_data_lane(lane_idx)
-
-
-
-            except Exception as e:
-                self.logger.error(f"Error in clock event monitoring: {e}")
-                # Brief pause before retrying
-                await Timer(1, units='ns')
-
+            # D-PHY is DDR, so we must sample on every clock edge
+            await Edge(self.bus.clk_p)
+            for lane_idx in self.enabled_lanes:
+                await self._sample_data_lane(lane_idx)
 
     async def _sample_data_lane(self, lane_idx: int):
-        """Sample a specific data lane for HS data"""
-
-        await self.data_rx[lane_idx].update_state()
-
-        # Check if this lane has transitioned to HS state
-        lane_hs_active = self.data_rx[lane_idx].hs_active
-        if lane_hs_active != self.lane_hs_active[lane_idx]:
-            self.lane_hs_active[lane_idx] = lane_hs_active
-            self.logger.info(f"Lane {lane_idx} HS state changed to: {lane_hs_active}")
-
-            # Check if all enabled lanes are now in HS state
-            await self._check_all_lanes_hs_active()
-
-        # Only sample if data monitoring is active
-        if not self.hs_active:
-            return
-
-        rx_lane = self.data_rx[lane_idx]
-
+        """Sample a specific data lane."""
         try:
-            p_val = int(rx_lane.sig_p.value)
-            n_val = int(rx_lane.sig_n.value)
+            p_val = int(getattr(self.bus, f'data{lane_idx}_p').value)
+            n_val = int(getattr(self.bus, f'data{lane_idx}_n').value)
         except (ValueError, TypeError):
-            # Handle invalid values
             return
 
         # HS-0: p=0, n=1; HS-1: p=1, n=0
@@ -804,244 +706,93 @@ class DPhyRxModel:
             await self._handle_data_bit(lane_idx, False)
         elif p_val == 1 and n_val == 0:
             await self._handle_data_bit(lane_idx, True)
-        elif p_val == 1 and n_val == 1:  # LP-11, end of packet
+        elif p_val == 1 and n_val == 1:  # LP-11, potential end of packet
             await self._handle_packet_end(lane_idx)
 
     async def _handle_data_bit(self, lane_idx: int, bit_value: bool):
-        """Handle received data bit from a specific lane with bit alignment for sync detection"""
-        # Update bit shifter for sync detection (16-bit sliding window)
-        # For LSB-first transmission: shift right and add new bit to MSB position
-        self.lane_bit_shifters[lane_idx] = ((self.lane_bit_shifters[lane_idx] >> 1) | (bit_value << 15)) & 0xFFFF
-        self.logger.info(f"Lane {lane_idx}: Bit shifter: 0x{self.lane_bit_shifters[lane_idx]:04x}")
-
-        # Check for sync sequence in the sliding window if not already aligned
+        """Handle received data bit from a specific lane."""
         if not self.lane_sync_aligned[lane_idx]:
-            # Check all possible 8-bit alignments in the 16-bit shifter
-            # For LSB-first, we need to check from MSB to LSB in the shifter
-            for shift in range(9):  # 0 to 8 bit shifts
-                # Extract 8 bits starting from MSB position (shift 15 down to 8)
-                shifted_bits = (self.lane_bit_shifters[lane_idx] >> (15 - shift)) & 0xFF
+            self.lane_bit_shifters[lane_idx] = ((self.lane_bit_shifters[lane_idx] >> 1) | (bit_value << 15)) & 0xFFFF
+            for shift in range(9):
+                shifted_bits = (self.lane_bit_shifters[lane_idx] >> (8 - shift)) & 0xFF
                 if shifted_bits == self.sync_sequence_bits:
-                    # Sync sequence found! Record the alignment
                     self.lane_sync_aligned[lane_idx] = True
                     self.lane_sync_shift[lane_idx] = shift
-                    self.sync_sequence_detected[lane_idx] = True
-                    self.overhead_bytes_skipped[lane_idx] += 1
-                    self.logger.info(f"Lane {lane_idx}: Detected sync sequence 0x{shifted_bits:02x} at shift {shift}, "
-                                   f"bit shifter: 0x{self.lane_bit_shifters[lane_idx]:04x}")
-
-                    # Reset bit accumulation with proper alignment
+                    self.lane_processing_packet[lane_idx] = True
+                    self.logger.info(f"Lane {lane_idx}: Sync detected.")
                     self.lane_byte_buffers[lane_idx] = 0
                     self.lane_bit_counts[lane_idx] = 0
+
+                    is_first_lane_to_sync = not self.hs_active
+                    if is_first_lane_to_sync:
+                        self.hs_active = True
+                        if self.on_packet_start:
+                            await cocotb.start(self.on_packet_start())
                     return
 
-        # If sync is aligned, accumulate bits with proper alignment
         if self.lane_sync_aligned[lane_idx]:
-            # Add bit to byte buffer with alignment offset
             if bit_value:
                 self.lane_byte_buffers[lane_idx] |= (1 << self.lane_bit_counts[lane_idx])
-
             self.lane_bit_counts[lane_idx] += 1
-
             if self.lane_bit_counts[lane_idx] >= 8:
-                # Complete byte received
                 byte_val = self.lane_byte_buffers[lane_idx]
-
-                # Skip a few bytes after sync sequence (protocol overhead)
-                if self.sync_sequence_detected[lane_idx] and self.overhead_bytes_skipped[lane_idx] < 4:
-                    self.overhead_bytes_skipped[lane_idx] += 1
-                    self.logger.debug(f"Lane {lane_idx}: Skipping protocol overhead byte 0x{byte_val:02x} ({self.overhead_bytes_skipped[lane_idx]}/4)")
-
-                    # Reset for next byte without forwarding
-                    self.lane_byte_buffers[lane_idx] = 0
-                    self.lane_bit_counts[lane_idx] = 0
-                    return
-
-                # After sync sequence and overhead, forward actual packet data
                 self.lane_buffers[lane_idx].append(byte_val)
-                self.logger.debug(f"Lane {lane_idx}: Received packet byte 0x{byte_val:02x}")
-
-                # Forward data to RX callbacks
                 if self.on_data_received:
-                    self.logger.info(f"Lane {lane_idx}: Forwarding packet byte 0x{byte_val:02x} to RX callback")
-                    # Handle both sync and async callbacks
-                    if asyncio.iscoroutinefunction(self.on_data_received):
-                        await self.on_data_received(byte_val)
-                    else:
-                        self.on_data_received(byte_val)
-                else:
-                    self.logger.warning(f"Lane {lane_idx}: No on_data_received callback set")
-
-                # Reset for next byte
+                    await cocotb.start(self.on_data_received(byte_val))
                 self.lane_byte_buffers[lane_idx] = 0
                 self.lane_bit_counts[lane_idx] = 0
 
     async def _handle_packet_end(self, lane_idx: int):
-        """Handle end of packet on a specific lane"""
-        if self.lane_buffers[lane_idx]:
-            self.logger.info(f"Lane {lane_idx}: Packet end, {len(self.lane_buffers[lane_idx])} bytes received")
+        """Handle end of packet on a specific lane."""
+        if not self.lane_processing_packet.get(lane_idx, False):
+            return
 
-            # Process packet data for lane demuxing and decoding
-            packet_data = bytes(self.lane_buffers[lane_idx])
-            await self._process_packet_data(lane_idx, packet_data)
+        self.logger.info(f"Lane {lane_idx}: Packet end, {len(self.lane_buffers[lane_idx])} bytes received")
+        self.reset_lane_state(lane_idx)
 
-            # Forward remaining data to RX callbacks
-            if self.on_data_received and packet_data:
-                self.logger.info(f"Lane {lane_idx}: Forwarding {len(packet_data)} bytes to RX callback at packet end")
-                # Handle both sync and async callbacks
-                if asyncio.iscoroutinefunction(self.on_data_received):
-                    await self.on_data_received(packet_data)
-                else:
-                    self.on_data_received(packet_data)
-            elif not self.on_data_received:
-                self.logger.warning(f"Lane {lane_idx}: No on_data_received callback set for packet end")
+        # Check if all lanes are done processing
+        if all(not self.lane_processing_packet[i] for i in self.enabled_lanes):
+            if self.hs_active:
+                self.hs_active = False
+                if self.on_packet_end:
+                    await cocotb.start(self.on_packet_end())
 
-            # Clear buffer and reset sync detection for next packet
-            self.lane_buffers[lane_idx].clear()
-            self.sync_sequence_detected[lane_idx] = False
-            self.overhead_bytes_skipped[lane_idx] = 0
-            self.lane_bit_shifters[lane_idx] = 0
-            self.lane_sync_aligned[lane_idx] = False
-            self.lane_sync_shift[lane_idx] = 0
+    def reset_lane_state(self, lane_idx: int):
+        """Reset the state for a single lane."""
+        self.lane_buffers[lane_idx].clear()
+        self.lane_bit_shifters[lane_idx] = 0
+        self.lane_sync_aligned[lane_idx] = False
+        self.lane_sync_shift[lane_idx] = 0
+        self.lane_processing_packet[lane_idx] = False
+        self.lane_byte_buffers[lane_idx] = 0
+        self.lane_bit_counts[lane_idx] = 0
 
-    async def _process_packet_data(self, lane_idx: int, packet_data: bytes):
-        """Process packet data for lane demuxing and packet decoding"""
-        self.logger.info(f"Processing packet data from lane {lane_idx}: {len(packet_data)} bytes")
-
-        # Here you would implement lane demuxing and packet decoding logic
-        # For now, just log the data
-        self.logger.info(f"Lane {lane_idx} packet data: {[f'0x{b:02x}' for b in packet_data]}")
-
+    def reset(self):
+        """Reset the entire receiver model state."""
+        for i in range(self.config.lane_count):
+            self.reset_lane_state(i)
+        self.hs_active = False
+        self.logger.info("DPhyRxModel reset.")
 
     def enable_lane(self, lane_idx: int):
-        """Enable a specific data lane"""
         if 0 <= lane_idx < self.config.lane_count:
             self.enabled_lanes.add(lane_idx)
-            self.logger.info(f"Enabled lane {lane_idx}")
         else:
             self.logger.error(f"Invalid lane index: {lane_idx}")
 
     def disable_lane(self, lane_idx: int):
-        """Disable a specific data lane"""
         if lane_idx in self.enabled_lanes:
             self.enabled_lanes.remove(lane_idx)
-            self.logger.info(f"Disabled lane {lane_idx}")
-        else:
-            self.logger.error(f"Lane {lane_idx} is not enabled")
-
-    def get_lane_buffer(self, lane_idx: int) -> bytes:
-        """Get the current buffer contents for a specific lane"""
-        if 0 <= lane_idx < self.config.lane_count:
-            return bytes(self.lane_buffers[lane_idx])
-        else:
-            self.logger.error(f"Invalid lane index: {lane_idx}")
-            return b''
-
-    def clear_lane_buffer(self, lane_idx: int):
-        """Clear the buffer for a specific lane"""
-        if 0 <= lane_idx < self.config.lane_count:
-            self.lane_buffers[lane_idx].clear()
-            self.lane_byte_buffers[lane_idx] = 0
-            self.lane_bit_counts[lane_idx] = 0
-            self.lane_bit_shifters[lane_idx] = 0
-            self.lane_sync_aligned[lane_idx] = False
-            self.lane_sync_shift[lane_idx] = 0
-            self.logger.info(f"Cleared buffer for lane {lane_idx}")
-        else:
-            self.logger.error(f"Invalid lane index: {lane_idx}")
-
-    def get_enabled_lanes(self) -> set:
-        """Get the set of enabled lane indices"""
-        return self.enabled_lanes.copy()
 
     def get_received_data(self) -> bytes:
-        """Collect received data from all RX lanes"""
-        if not self.data_rx:
-            return b''
+        # Note: This assumes single-lane operation for simplicity.
+        # Multi-lane would require a more sophisticated byte de-skew and merge algorithm.
+        return bytes(self.lane_buffers.get(0, []))
 
-        if self.config.lane_distribution_enabled and len(self.data_rx) > 1:
-            # Collect data from all lanes
-            lane_data = []
-            for rx_lane in self.data_rx:
-                lane_data.append(rx_lane.get_received_data())
-
-            # Merge lane data back into single stream
-            from ..utils import lanes_to_bytes
-            return lanes_to_bytes(lane_data)
-        else:
-            # Get data from the first lane only (no distribution)
-            return self.data_rx[0].get_received_data()
-
-    def set_rx_callbacks(self, on_packet_start=None, on_packet_end=None,
-                        on_data_received=None):
-        """Set callbacks for RX events"""
-        # Set callbacks for the overall model
-        self.on_hs_start = on_packet_start
-        self.on_hs_end = on_packet_end
+    def set_rx_callbacks(self, on_packet_start=None, on_packet_end=None, on_data_received=None):
+        self.on_packet_start = on_packet_start
+        self.on_packet_end = on_packet_end
         self.on_data_received = on_data_received
-
-        # Set callbacks for clock lane
-        self.clock_rx.on_hs_start = on_packet_start
-        self.clock_rx.on_hs_end = on_packet_end
-        self.clock_rx.on_data_received = on_data_received
-
-        # Set callbacks for all RX lanes
-        for rx_lane in self.data_rx:
-            rx_lane.on_hs_start = on_packet_start
-            rx_lane.on_hs_end = on_packet_end
-            rx_lane.on_data_received = on_data_received
-
-    def get_signal_statistics(self) -> dict:
-        """Get signal quality statistics from all lanes"""
-        stats = {
-            'clock_lane': {},  # No longer using signal monitor
-            'data_lanes': []
-        }
-
-        for rx_lane in self.data_rx:
-            stats['data_lanes'].append({})  # No longer using signal monitor
-
-        return stats
-
-    def reset_signal_monitors(self):
-        """Reset signal quality monitoring on all lanes"""
-        # No longer using signal monitors
-        pass
-
-    def reset_lane_hs_tracking(self):
-        """Reset HS state tracking for all lanes"""
-        for lane_idx in range(self.config.lane_count):
-            self.lane_hs_active[lane_idx] = False
-        self.hs_active = False
-        self.logger.info("Reset lane HS state tracking")
-
-    def reset_sync_sequence_detection(self):
-        """Reset sync sequence detection for all lanes"""
-        for lane_idx in range(self.config.lane_count):
-            self.sync_sequence_detected[lane_idx] = False
-            self.overhead_bytes_skipped[lane_idx] = 0
-            self.lane_bit_shifters[lane_idx] = 0
-            self.lane_sync_aligned[lane_idx] = False
-            self.lane_sync_shift[lane_idx] = 0
-        self.logger.info("Reset sync sequence detection for all lanes")
-
-    def get_lane_hs_status(self) -> dict:
-        """Get HS status for all lanes"""
-        return {
-            'overall_hs_active': self.hs_active,
-            'lane_hs_active': self.lane_hs_active.copy(),
-            'enabled_lanes': list(self.enabled_lanes)
-        }
-
-    def get_lane_sync_status(self) -> dict:
-        """Get sync sequence detection status for all lanes"""
-        return {
-            'sync_detected': self.sync_sequence_detected.copy(),
-            'sync_aligned': self.lane_sync_aligned.copy(),
-            'sync_shifts': self.lane_sync_shift.copy(),
-            'bit_shifters': {lane: f"0x{self.lane_bit_shifters[lane]:04x}" for lane in self.lane_bit_shifters},
-            'overhead_skipped': self.overhead_bytes_skipped.copy()
-        }
 
 
 # Legacy aliases for backward compatibility

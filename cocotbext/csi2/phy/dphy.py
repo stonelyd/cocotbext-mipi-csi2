@@ -681,7 +681,7 @@ class DPhyRxModel:
         # Protocol overhead tracking
         self.sync_sequence_detected = {i: False for i in range(config.lane_count)}
         self.overhead_bytes_skipped = {i: 0 for i in range(config.lane_count)}
-        self.sync_sequence = 0xB8  # D-PHY sync sequence
+        self.sync_sequence = 0xB8  # D-PHY sync sequence (actual received value)
 
         # Lane enable status
         self.enabled_lanes = set(range(config.lane_count))  # All lanes enabled by default
@@ -848,11 +848,14 @@ class DPhyRxModel:
 
             # Forward data to RX callbacks
             if self.on_data_received:
+                self.logger.info(f"Lane {lane_idx}: Forwarding packet byte 0x{byte_val:02x} to RX callback")
                 # Handle both sync and async callbacks
                 if asyncio.iscoroutinefunction(self.on_data_received):
                     await self.on_data_received(byte_val)
                 else:
                     self.on_data_received(byte_val)
+            else:
+                self.logger.warning(f"Lane {lane_idx}: No on_data_received callback set")
 
             # Reset for next byte
             self.lane_byte_buffers[lane_idx] = 0
@@ -869,11 +872,14 @@ class DPhyRxModel:
 
             # Forward remaining data to RX callbacks
             if self.on_data_received and packet_data:
+                self.logger.info(f"Lane {lane_idx}: Forwarding {len(packet_data)} bytes to RX callback at packet end")
                 # Handle both sync and async callbacks
                 if asyncio.iscoroutinefunction(self.on_data_received):
                     await self.on_data_received(packet_data)
                 else:
                     self.on_data_received(packet_data)
+            elif not self.on_data_received:
+                self.logger.warning(f"Lane {lane_idx}: No on_data_received callback set for packet end")
 
             # Clear buffer and reset sync detection for next packet
             self.lane_buffers[lane_idx].clear()

@@ -262,13 +262,18 @@ class Csi2RxModel:
 
     async def _on_phy_data_received(self, byte_data):
         """Handle PHY data reception"""
+        # Debug: log when this callback is called
+        self.logger.info(f"RX: _on_phy_data_received called with: {byte_data}")
+
         # Accumulate received bytes for processing
         if isinstance(byte_data, int):
             # Single byte received
             self.raw_data_buffer.append(byte_data)
+            self.logger.info(f"RX: Added single byte 0x{byte_data:02x} to buffer")
         else:
             # Multiple bytes received
             self.raw_data_buffer.extend(byte_data)
+            self.logger.info(f"RX: Added {len(byte_data)} bytes to buffer")
 
     async def _process_raw_data(self, raw_data: bytes):
         """

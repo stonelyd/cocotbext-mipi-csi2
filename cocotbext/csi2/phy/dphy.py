@@ -678,6 +678,13 @@ class DPhyRxModel:
         self.lane_byte_buffers = {i: 0 for i in range(config.lane_count)}
         self.lane_bit_counts = {i: 0 for i in range(config.lane_count)}
 
+        # Bit alignment tracking for sync sequence detection
+        self.lane_bit_shifters = {i: 0 for i in range(config.lane_count)}  # 16-bit sliding window for sync detection
+        self.lane_sync_aligned = {i: False for i in range(config.lane_count)}  # Whether sync alignment is found
+        self.lane_sync_shift = {i: 0 for i in range(config.lane_count)}  # Bit shift offset for alignment
+        self.sync_sequence_bits = 0xB8  # D-PHY sync sequence: 00011101 (LSB first)
+        self.sync_sequence_mask = 0xFF  # 8-bit mask for sync sequence
+
         # Protocol overhead tracking
         self.sync_sequence_detected = {i: False for i in range(config.lane_count)}
         self.overhead_bytes_skipped = {i: 0 for i in range(config.lane_count)}
@@ -727,10 +734,6 @@ class DPhyRxModel:
         """Monitor clock lane for positive/negative edge events"""
         self.logger.info("Starting clock event monitoring")
 
-        # Track previous signal values for edge detection
-        prev_p = int(self.clock_rx.sig_p.value) if hasattr(self.clock_rx.sig_p, 'value') else 0
-        prev_n = int(self.clock_rx.sig_n.value) if hasattr(self.clock_rx.sig_n, 'value') else 0
-
         while True:
             try:
                 # Wait for any edge on either signal
@@ -744,29 +747,24 @@ class DPhyRxModel:
                 # Get current signal values
                 current_p = int(self.clock_rx.sig_p.value)
                 current_n = int(self.clock_rx.sig_n.value)
+                current_time = cocotb.utils.get_sim_time('ns')
 
-                # Only process if signals actually changed
-                if current_p != prev_p or current_n != prev_n:
-                    current_time = cocotb.utils.get_sim_time('ns')
+                # Detect clock events: p going positive, n going negative
+                if current_p == 1 and current_n == 0:  # p going positive
+                    self.logger.debug(f"Clock event: p going positive at {current_time}ns")
 
-                    # Detect clock events: p going positive, n going negative
-                    if prev_p == 0 and current_p == 1:  # p going positive
-                        self.logger.debug(f"Clock event: p going positive at {current_time}ns")
+                    # Sample all enabled data lanes on clock event
+                    for lane_idx in self.enabled_lanes:
+                        await self._sample_data_lane(lane_idx)
 
-                        # Sample all enabled data lanes on clock event
-                        for lane_idx in self.enabled_lanes:
-                            await self._sample_data_lane(lane_idx)
+                if current_p == 0 and current_n == 1:  # n going negative
+                    self.logger.debug(f"Clock event: n going negative at {current_time}ns")
 
-                    if prev_n == 1 and current_n == 0:  # n going negative
-                        self.logger.debug(f"Clock event: n going negative at {current_time}ns")
+                    # Sample all enabled data lanes on clock event
+                    for lane_idx in self.enabled_lanes:
+                        await self._sample_data_lane(lane_idx)
 
-                        # Sample all enabled data lanes on clock event
-                        for lane_idx in self.enabled_lanes:
-                            await self._sample_data_lane(lane_idx)
 
-                    # Update previous values
-                    prev_p = current_p
-                    prev_n = current_n
 
             except Exception as e:
                 self.logger.error(f"Error in clock event monitoring: {e}")
@@ -810,56 +808,73 @@ class DPhyRxModel:
             await self._handle_packet_end(lane_idx)
 
     async def _handle_data_bit(self, lane_idx: int, bit_value: bool):
-        """Handle received data bit from a specific lane"""
-        # Accumulate bits into bytes (LSB first)
-        if bit_value:
-            self.lane_byte_buffers[lane_idx] |= (1 << self.lane_bit_counts[lane_idx])
+        """Handle received data bit from a specific lane with bit alignment for sync detection"""
+        # Update bit shifter for sync detection (16-bit sliding window)
+        # For LSB-first transmission: shift right and add new bit to MSB position
+        self.lane_bit_shifters[lane_idx] = ((self.lane_bit_shifters[lane_idx] >> 1) | (bit_value << 15)) & 0xFFFF
+        self.logger.info(f"Lane {lane_idx}: Bit shifter: 0x{self.lane_bit_shifters[lane_idx]:04x}")
 
-        self.lane_bit_counts[lane_idx] += 1
+        # Check for sync sequence in the sliding window if not already aligned
+        if not self.lane_sync_aligned[lane_idx]:
+            # Check all possible 8-bit alignments in the 16-bit shifter
+            # For LSB-first, we need to check from MSB to LSB in the shifter
+            for shift in range(9):  # 0 to 8 bit shifts
+                # Extract 8 bits starting from MSB position (shift 15 down to 8)
+                shifted_bits = (self.lane_bit_shifters[lane_idx] >> (15 - shift)) & 0xFF
+                if shifted_bits == self.sync_sequence_bits:
+                    # Sync sequence found! Record the alignment
+                    self.lane_sync_aligned[lane_idx] = True
+                    self.lane_sync_shift[lane_idx] = shift
+                    self.sync_sequence_detected[lane_idx] = True
+                    self.overhead_bytes_skipped[lane_idx] += 1
+                    self.logger.info(f"Lane {lane_idx}: Detected sync sequence 0x{shifted_bits:02x} at shift {shift}, "
+                                   f"bit shifter: 0x{self.lane_bit_shifters[lane_idx]:04x}")
 
-        if self.lane_bit_counts[lane_idx] >= 8:
-            # Complete byte received
-            byte_val = self.lane_byte_buffers[lane_idx]
+                    # Reset bit accumulation with proper alignment
+                    self.lane_byte_buffers[lane_idx] = 0
+                    self.lane_bit_counts[lane_idx] = 0
+                    return
 
-            # Check if this is the sync sequence
-            if byte_val == self.sync_sequence and not self.sync_sequence_detected[lane_idx]:
-                self.sync_sequence_detected[lane_idx] = True
-                self.overhead_bytes_skipped[lane_idx] += 1
-                self.logger.info(f"Lane {lane_idx}: Detected sync sequence 0x{byte_val:02x}, skipping protocol overhead")
+        # If sync is aligned, accumulate bits with proper alignment
+        if self.lane_sync_aligned[lane_idx]:
+            # Add bit to byte buffer with alignment offset
+            if bit_value:
+                self.lane_byte_buffers[lane_idx] |= (1 << self.lane_bit_counts[lane_idx])
 
-                # Reset for next byte without forwarding
-                self.lane_byte_buffers[lane_idx] = 0
-                self.lane_bit_counts[lane_idx] = 0
-                return
+            self.lane_bit_counts[lane_idx] += 1
 
-            # Skip a few bytes after sync sequence (protocol overhead)
-            if self.sync_sequence_detected[lane_idx] and self.overhead_bytes_skipped[lane_idx] < 4:
-                self.overhead_bytes_skipped[lane_idx] += 1
-                self.logger.debug(f"Lane {lane_idx}: Skipping protocol overhead byte 0x{byte_val:02x} ({self.overhead_bytes_skipped[lane_idx]}/4)")
+            if self.lane_bit_counts[lane_idx] >= 8:
+                # Complete byte received
+                byte_val = self.lane_byte_buffers[lane_idx]
 
-                # Reset for next byte without forwarding
-                self.lane_byte_buffers[lane_idx] = 0
-                self.lane_bit_counts[lane_idx] = 0
-                return
+                # Skip a few bytes after sync sequence (protocol overhead)
+                if self.sync_sequence_detected[lane_idx] and self.overhead_bytes_skipped[lane_idx] < 4:
+                    self.overhead_bytes_skipped[lane_idx] += 1
+                    self.logger.debug(f"Lane {lane_idx}: Skipping protocol overhead byte 0x{byte_val:02x} ({self.overhead_bytes_skipped[lane_idx]}/4)")
 
-            # After sync sequence and overhead, forward actual packet data
-            self.lane_buffers[lane_idx].append(byte_val)
-            self.logger.debug(f"Lane {lane_idx}: Received packet byte 0x{byte_val:02x}")
+                    # Reset for next byte without forwarding
+                    self.lane_byte_buffers[lane_idx] = 0
+                    self.lane_bit_counts[lane_idx] = 0
+                    return
 
-            # Forward data to RX callbacks
-            if self.on_data_received:
-                self.logger.info(f"Lane {lane_idx}: Forwarding packet byte 0x{byte_val:02x} to RX callback")
-                # Handle both sync and async callbacks
-                if asyncio.iscoroutinefunction(self.on_data_received):
-                    await self.on_data_received(byte_val)
+                # After sync sequence and overhead, forward actual packet data
+                self.lane_buffers[lane_idx].append(byte_val)
+                self.logger.debug(f"Lane {lane_idx}: Received packet byte 0x{byte_val:02x}")
+
+                # Forward data to RX callbacks
+                if self.on_data_received:
+                    self.logger.info(f"Lane {lane_idx}: Forwarding packet byte 0x{byte_val:02x} to RX callback")
+                    # Handle both sync and async callbacks
+                    if asyncio.iscoroutinefunction(self.on_data_received):
+                        await self.on_data_received(byte_val)
+                    else:
+                        self.on_data_received(byte_val)
                 else:
-                    self.on_data_received(byte_val)
-            else:
-                self.logger.warning(f"Lane {lane_idx}: No on_data_received callback set")
+                    self.logger.warning(f"Lane {lane_idx}: No on_data_received callback set")
 
-            # Reset for next byte
-            self.lane_byte_buffers[lane_idx] = 0
-            self.lane_bit_counts[lane_idx] = 0
+                # Reset for next byte
+                self.lane_byte_buffers[lane_idx] = 0
+                self.lane_bit_counts[lane_idx] = 0
 
     async def _handle_packet_end(self, lane_idx: int):
         """Handle end of packet on a specific lane"""
@@ -885,6 +900,9 @@ class DPhyRxModel:
             self.lane_buffers[lane_idx].clear()
             self.sync_sequence_detected[lane_idx] = False
             self.overhead_bytes_skipped[lane_idx] = 0
+            self.lane_bit_shifters[lane_idx] = 0
+            self.lane_sync_aligned[lane_idx] = False
+            self.lane_sync_shift[lane_idx] = 0
 
     async def _process_packet_data(self, lane_idx: int, packet_data: bytes):
         """Process packet data for lane demuxing and packet decoding"""
@@ -925,6 +943,9 @@ class DPhyRxModel:
             self.lane_buffers[lane_idx].clear()
             self.lane_byte_buffers[lane_idx] = 0
             self.lane_bit_counts[lane_idx] = 0
+            self.lane_bit_shifters[lane_idx] = 0
+            self.lane_sync_aligned[lane_idx] = False
+            self.lane_sync_shift[lane_idx] = 0
             self.logger.info(f"Cleared buffer for lane {lane_idx}")
         else:
             self.logger.error(f"Invalid lane index: {lane_idx}")
@@ -999,6 +1020,9 @@ class DPhyRxModel:
         for lane_idx in range(self.config.lane_count):
             self.sync_sequence_detected[lane_idx] = False
             self.overhead_bytes_skipped[lane_idx] = 0
+            self.lane_bit_shifters[lane_idx] = 0
+            self.lane_sync_aligned[lane_idx] = False
+            self.lane_sync_shift[lane_idx] = 0
         self.logger.info("Reset sync sequence detection for all lanes")
 
     def get_lane_hs_status(self) -> dict:
@@ -1007,6 +1031,16 @@ class DPhyRxModel:
             'overall_hs_active': self.hs_active,
             'lane_hs_active': self.lane_hs_active.copy(),
             'enabled_lanes': list(self.enabled_lanes)
+        }
+
+    def get_lane_sync_status(self) -> dict:
+        """Get sync sequence detection status for all lanes"""
+        return {
+            'sync_detected': self.sync_sequence_detected.copy(),
+            'sync_aligned': self.lane_sync_aligned.copy(),
+            'sync_shifts': self.lane_sync_shift.copy(),
+            'bit_shifters': {lane: f"0x{self.lane_bit_shifters[lane]:04x}" for lane in self.lane_bit_shifters},
+            'overhead_skipped': self.overhead_bytes_skipped.copy()
         }
 
 

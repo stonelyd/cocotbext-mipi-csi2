@@ -151,3 +151,44 @@ async def test_basic_packet_transmission(dut):
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
 
+@cocotb.test()
+async def test_4lane_packet_transmission(dut):
+    """Test CSI-2 packet transmission and reception with 4-lane distribution enabled"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+
+    # Configure with 4-lane distribution enabled
+    await tb.configure_csi2(lane_count=4, bit_rate_mbps=1000)
+
+    # Override configuration to enable lane distribution
+    tb.config.lane_distribution_enabled = True
+    cocotb.log.info("4-lane distribution enabled for this test")
+
+    # Reset RX model to ensure clean state
+    await tb.rx_model.reset()
+
+    # Test direct PHY transmission with timeout
+    frame_start = Csi2ShortPacket.frame_start(virtual_channel=0, frame_number=1)
+    packet_bytes = frame_start.to_bytes()
+
+    cocotb.log.info(f"Testing 4-lane PHY transmission: {len(packet_bytes)} bytes")
+    cocotb.log.info(f"Packet bytes: {[f'{b:02x}' for b in packet_bytes]}")
+
+    # Send directly via TX PHY with timeout
+    try:
+        cocotb.log.info("Attempting to start 4-lane packet transmission")
+        await with_timeout(tb.tx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("4-lane packet transmission started")
+        cocotb.log.info("Attempting to send packet data across 4 lanes")
+        await with_timeout(tb.tx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
+        cocotb.log.info("4-lane packet data sent")
+        cocotb.log.info("Attempting to stop 4-lane packet transmission")
+        await with_timeout(tb.tx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("4-lane PHY transmission completed")
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.error("Timeout in 4-lane PHY transmission")
+        raise
+
+    # Wait a bit for reception
+    await Timer(1000, units="ns")

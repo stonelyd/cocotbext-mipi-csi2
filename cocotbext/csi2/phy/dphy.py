@@ -178,8 +178,32 @@ class DPhyTxTransmitter:
 
         self.logger.info(f"Lane {self.lane.name}: HS Sync-Sequence transmission complete")
 
+    def _hs_prepare_sequence_step1_lp01(self):
+        """Step 1: Set LP-01 state (no timing)"""
+        self._set_lp_state(DPhyState.LP_01)
+        self.logger.info(f"Lane {self.lane.name}: Set LP-01 state")
+
+    def _hs_prepare_sequence_step2_lp00(self):
+        """Step 2: Set LP-00 state (no timing)"""
+        self._set_lp_state(DPhyState.LP_00)
+        self.logger.info(f"Lane {self.lane.name}: Set LP-00 state")
+
+    def _hs_prepare_sequence_step3_hs0(self):
+        """Step 3: Set HS-0 state (no timing)"""
+        self.sig_p.value = 0
+        self.sig_n.value = 1
+        self.current_state = DPhyState.HS_0
+        self.logger.info(f"Lane {self.lane.name}: Set HS-0 state")
+
+    async def _hs_prepare_sequence_step4_sync(self):
+        """Step 4: Send sync sequence (this still needs async for bit-level timing)"""
+        await self._send_sync_sequence()
+        self.hs_active = True
+        self.lp_active = False
+        self.logger.info(f"Lane {self.lane.name}: HS prepare sequence complete, ready for data")
+
     async def _hs_prepare_sequence(self):
-        """Execute HS prepare sequence with improved timing"""
+        """Execute HS prepare sequence with improved timing - LEGACY METHOD"""
         self.logger.info(f"Lane {self.lane.name}: Starting HS prepare sequence")
 
         #set LP-01 state for 50ns
@@ -610,15 +634,45 @@ class DPhyTxModel:
         self.transmission_active = False
 
     async def start_packet_transmission(self):
-        """Start packet transmission (HS prepare on all lanes)"""
-        self.logger.info("TX PHY: Starting packet transmission")
+        """Start packet transmission (HS prepare on all lanes) with parallel timing"""
+        self.logger.info("TX PHY: Starting packet transmission with parallel timing")
 
         if not self.config.continuous_clock:
             await self.clock_tx.start_hs_transmission()
 
-        # Start all data lanes sequentially (cocotb compatibility)
+        # Step 1: Set LP-01 state on all lanes simultaneously
         for tx_lane in self.data_tx:
-            await tx_lane.start_hs_transmission()
+            tx_lane._hs_prepare_sequence_step1_lp01()
+
+        # Wait for LP-01 duration (50ns)
+        await Timer(50, units='ns')
+        self.logger.info("TX PHY: LP-01 duration complete (50ns)")
+
+        # Step 2: Set LP-00 state on all lanes simultaneously
+        for tx_lane in self.data_tx:
+            tx_lane._hs_prepare_sequence_step2_lp00()
+
+        # Wait for LP-00 duration (60ns)
+        await Timer(60, units='ns')
+        self.logger.info("TX PHY: LP-00 duration complete (60ns)")
+
+        # Wait for HS prepare time
+        await Timer(int(self.phy_config.t_hs_prepare), units='ns')
+        self.logger.info(f"TX PHY: HS prepare duration complete ({self.phy_config.t_hs_prepare}ns)")
+
+        # Step 3: Set HS-0 state on all lanes simultaneously
+        for tx_lane in self.data_tx:
+            tx_lane._hs_prepare_sequence_step3_hs0()
+
+        # Wait for HS zero period
+        await Timer(int(self.phy_config.t_hs_zero), units='ns')
+        self.logger.info(f"TX PHY: HS zero duration complete ({self.phy_config.t_hs_zero}ns)")
+
+        # Step 4: Send sync sequence on all lanes (this still needs async for bit-level timing)
+        sync_tasks = [cocotb.start_soon(tx_lane._hs_prepare_sequence_step4_sync()) for tx_lane in self.data_tx]
+        for task in sync_tasks:
+            await task
+        self.logger.info("TX PHY: All lanes sync sequences complete")
 
     async def stop_packet_transmission(self):
         """Stop packet transmission (HS exit on all lanes)"""

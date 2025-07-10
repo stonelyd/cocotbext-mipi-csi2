@@ -202,41 +202,22 @@ class DPhyTxTransmitter:
         self.lp_active = False
         self.logger.info(f"Lane {self.lane.name}: HS prepare sequence complete, ready for data")
 
-    async def _hs_prepare_sequence(self):
-        """Execute HS prepare sequence with improved timing - LEGACY METHOD"""
-        self.logger.info(f"Lane {self.lane.name}: Starting HS prepare sequence")
-
-        #set LP-01 state for 50ns
-        self._set_lp_state(DPhyState.LP_01)
-        await Timer(50, units='ns')
-        self.logger.info(f"Lane {self.lane.name}: Set LP-01 state for 50.0ns")
-
-        # Set LP-00 state
-        self._set_lp_state(DPhyState.LP_00)
-        await Timer(60, units='ns')
-        self.logger.info(f"Lane {self.lane.name}: Set LP-00 state for 60.0ns")
-
-        # Wait for HS prepare time
-        await Timer(int(self.phy_config.t_hs_prepare), units='ns')
-
-        # Set HS-0 state for HS zero period
+    def _hs_exit_sequence_step1_hs0(self):
+        """Step 1: Set HS-0 state for trail period (no timing)"""
         self.sig_p.value = 0
         self.sig_n.value = 1
         self.current_state = DPhyState.HS_0
-        self.logger.info(f"Lane {self.lane.name}: Set HS-0 state for {self.phy_config.t_hs_zero}ns")
+        self.logger.debug(f"Lane {self.lane.name}: Set HS-0 state for trail")
 
-        # Wait for HS zero period
-        await Timer(int(self.phy_config.t_hs_zero), units='ns')
-
-        # Insert HS Sync-Sequence '00011101' (0x1D) according to D-PHY v2.5 Section 6.4.2
-        await self._send_sync_sequence()
-
-        self.hs_active = True
-        self.lp_active = False
-        self.logger.info(f"Lane {self.lane.name}: HS prepare sequence complete, ready for data")
+    def _hs_exit_sequence_step2_lp11(self):
+        """Step 2: Set LP-11 state (no timing)"""
+        self._set_lp_state(DPhyState.LP_11)
+        self.hs_active = False
+        self.lp_active = True
+        self.logger.debug(f"Lane {self.lane.name}: Set LP-11 state for exit")
 
     async def _hs_exit_sequence(self):
-        """Execute HS exit sequence"""
+        """Execute HS exit sequence - LEGACY METHOD"""
         self.logger.debug(f"Lane {self.lane.name}: Starting HS exit")
 
         # Drive HS-0 state during HS trail period as per D-PHY spec
@@ -675,13 +656,26 @@ class DPhyTxModel:
         self.logger.info("TX PHY: All lanes sync sequences complete")
 
     async def stop_packet_transmission(self):
-        """Stop packet transmission (HS exit on all lanes)"""
-        self.logger.info("TX PHY: Stopping packet transmission")
+        """Stop packet transmission (HS exit on all lanes) with parallel timing"""
+        self.logger.info("TX PHY: Stopping packet transmission with parallel timing")
 
-        # Stop all data lanes sequentially (cocotb compatibility)
+        # Step 1: Set HS-0 state on all lanes simultaneously for trail period
         for tx_lane in self.data_tx:
-            await tx_lane.stop_hs_transmission()
+            tx_lane._hs_exit_sequence_step1_hs0()
 
+        # Wait for HS trail period
+        await Timer(int(self.phy_config.t_hs_trail), units='ns')
+        self.logger.info(f"TX PHY: HS trail duration complete ({self.phy_config.t_hs_trail}ns)")
+
+        # Step 2: Set LP-11 state on all lanes simultaneously
+        for tx_lane in self.data_tx:
+            tx_lane._hs_exit_sequence_step2_lp11()
+
+        # Wait for HS exit period
+        await Timer(int(self.phy_config.t_hs_exit), units='ns')
+        self.logger.info(f"TX PHY: HS exit duration complete ({self.phy_config.t_hs_exit}ns)")
+
+        # Handle clock lane if not continuous
         if not self.config.continuous_clock:
             await self.clock_tx.stop_hs_transmission()
 

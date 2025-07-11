@@ -532,6 +532,15 @@ class DPhyTxModel:
         self.transmission_active = False
 
 
+class DPhyRxLaneState(Enum):
+    LP_11 = 0
+    LP_01 = 1
+    LP_00 = 2
+    HS_SYNC = 3
+    HS_DATA = 4
+    HS_TRAIL = 5
+
+
 class DPhyRxModel:
     """D-PHY Receiver Model for multi-lane PHY"""
 
@@ -588,6 +597,9 @@ class DPhyRxModel:
         # Lane enable status
         self.enabled_lanes = set(range(config.lane_count))
 
+        # RX state machine per lane
+        self.lane_rx_state = {i: DPhyRxLaneState.LP_11 for i in range(config.lane_count)}
+
         # Start monitoring tasks
         self._clock_monitor_task = cocotb.start_soon(self._monitor_clock_events())
 
@@ -607,13 +619,71 @@ class DPhyRxModel:
         except (ValueError, TypeError):
             return
 
-        # HS-0: p=0, n=1; HS-1: p=1, n=0
-        if p_val == 0 and n_val == 1:
-            await self._handle_data_bit(lane_idx, False)
-        elif p_val == 1 and n_val == 0:
-            await self._handle_data_bit(lane_idx, True)
-        elif p_val == 1 and n_val == 1:  # LP-11, potential end of packet
-            await self._handle_packet_end(lane_idx)
+        old_state = self.lane_rx_state[lane_idx]
+        new_state = old_state
+
+        # RX state machine - only transition if state actually changes
+        if old_state == DPhyRxLaneState.LP_11:
+            if p_val == 0 and n_val == 1:
+                new_state = DPhyRxLaneState.LP_01
+            elif p_val == 0 and n_val == 0:
+                new_state = DPhyRxLaneState.LP_00
+        elif old_state == DPhyRxLaneState.LP_01:
+            if p_val == 0 and n_val == 0:
+                new_state = DPhyRxLaneState.LP_00
+            elif p_val == 1 and n_val == 1:
+                new_state = DPhyRxLaneState.LP_11
+        elif old_state == DPhyRxLaneState.LP_00:
+            # In LP_00, we can transition to HS mode or back to LP_11
+            if p_val == 1 and n_val == 1:
+                new_state = DPhyRxLaneState.LP_11
+            elif (p_val == 0 and n_val == 1) or (p_val == 1 and n_val == 0):
+                # This is the start of HS mode - transition to HS_SYNC
+                new_state = DPhyRxLaneState.HS_SYNC
+        elif old_state == DPhyRxLaneState.HS_SYNC:
+            # Stay in HS_SYNC during sync sequence, only transition to HS_DATA
+            # after we've detected the sync pattern
+            if self.lane_sync_aligned[lane_idx]:
+                new_state = DPhyRxLaneState.HS_DATA
+        elif old_state == DPhyRxLaneState.HS_DATA:
+            # In HS_DATA, we can transition back to LP_11 when HS mode ends
+            if p_val == 1 and n_val == 1:
+                new_state = DPhyRxLaneState.LP_11
+
+        # Only handle state transition if state actually changed
+        if new_state != old_state:
+            await self._handle_state_transition(lane_idx, old_state, new_state)
+            self.lane_rx_state[lane_idx] = new_state
+
+        # Only sample bits in HS_DATA state
+        if self.lane_rx_state[lane_idx] == DPhyRxLaneState.HS_DATA:
+            bit_value = (p_val == 1 and n_val == 0)
+            await self._handle_data_bit(lane_idx, bit_value)
+        elif self.lane_rx_state[lane_idx] == DPhyRxLaneState.HS_SYNC:
+            # Also process bits in HS_SYNC state to detect sync sequence
+            bit_value = (p_val == 1 and n_val == 0)
+            await self._handle_data_bit(lane_idx, bit_value)
+
+        # Only clear buffers when transitioning TO LP_11, not when already in LP_11
+        if new_state == DPhyRxLaneState.LP_11 and old_state != DPhyRxLaneState.LP_11:
+            self.logger.info(f"Lane {lane_idx}: Transitioned to LP_11, clearing RX buffers and state.")
+            # Call packet end callback before clearing buffers
+            if self.lane_processing_packet[lane_idx]:
+                await self._handle_packet_end(lane_idx)
+
+            self.lane_buffers[lane_idx].clear()
+            self.lane_processing_packet[lane_idx] = False
+            self.lane_sync_aligned[lane_idx] = False
+            self.lane_packet_lengths[lane_idx] = 0
+            self.lane_byte_buffers[lane_idx] = 0
+            self.lane_bit_counts[lane_idx] = 0
+            self.lane_bit_shifters[lane_idx] = 0
+
+    async def _handle_state_transition(self, lane_idx: int, old_state: DPhyRxLaneState, new_state: DPhyRxLaneState):
+        """Handle D-PHY state transitions"""
+        self.logger.info(f"Lane {lane_idx}: State transition {old_state.name} -> {new_state.name}")
+        # No need to set lane_lp_active or lane_hs_active; all state is in lane_rx_state now.
+        # Add any additional logging or actions here if needed for future debugging.
 
     async def _handle_data_bit(self, lane_idx: int, bit_value: bool):
         """Handle received data bit from a specific lane."""
@@ -629,13 +699,22 @@ class DPhyRxModel:
                     self.lane_byte_buffers[lane_idx] = 0
                     self.lane_bit_counts[lane_idx] = 0
 
+                    # In multi-lane mode, all lanes should detect sync
+                    # For now, we'll use the first lane to trigger packet start
                     is_first_lane_to_sync = not self.hs_active
                     if is_first_lane_to_sync:
                         self.hs_active = True
                         if self.on_packet_start:
                             await cocotb.start(self.on_packet_start())
+                    else:
+                        # Additional lanes detecting sync in multi-lane mode
+                        self.logger.debug(f"Lane {lane_idx}: Additional sync detected in multi-lane mode")
 
                     break
+            else:
+                # Debug: log sync detection progress for lanes 1,2,3
+                if lane_idx in [1, 2, 3]:
+                    self.logger.debug(f"Lane {lane_idx}: Sync search - bit_shifters=0x{self.lane_bit_shifters[lane_idx]:04x}")
         else:
             self.lane_byte_buffers[lane_idx] = (self.lane_byte_buffers[lane_idx] >> 1) | (bit_value << 7)
             self.lane_bit_counts[lane_idx] += 1
@@ -660,6 +739,10 @@ class DPhyRxModel:
 
     async def _handle_single_lane_data(self, lane_idx: int, byte_val: int):
         """Handle data reception for single-lane mode"""
+        # Only process data if we're in HS_DATA state and processing a packet
+        if self.lane_rx_state[lane_idx] != DPhyRxLaneState.HS_DATA or not self.lane_processing_packet[lane_idx]:
+            return
+
         # Check if this is the first byte and indicates a long packet
         if len(self.lane_buffers[lane_idx]) == 1:
             if _is_short_packet_type(byte_val):
@@ -686,32 +769,53 @@ class DPhyRxModel:
             self.logger.info(f"Lane {lane_idx}: Packet complete ({len(packet_data)} bytes)")
 
             if self.on_data_received:
+                self.logger.info(f"Lane {lane_idx}: Calling on_data_received callback with {len(packet_data)} bytes")
                 await cocotb.start(self.on_data_received(packet_data))
 
-            # Reset for next packet
+            # Call packet end callback
+            await self._handle_packet_end(lane_idx)
+
+            # Reset for next packet and stop processing this lane until next sync
             self.lane_buffers[lane_idx] = self.lane_buffers[lane_idx][self.lane_packet_lengths[lane_idx]:]
             self.lane_packet_lengths[lane_idx] = 0
+            self.lane_processing_packet[lane_idx] = False
+            self.lane_sync_aligned[lane_idx] = False
+            self.logger.debug(f"Lane {lane_idx}: Stopped processing until next sync")
 
     async def _handle_distributed_data(self):
         """Handle data reception for multi-lane distribution mode"""
-        # Check if we have data on all active lanes
+        # For multi-lane mode, we need to reconstruct the original packet
+        # from distributed data across all lanes
+
+        # Get all lanes that are processing packets
         active_lanes = [i for i in range(len(self.data_lanes)) if self.lane_processing_packet[i]]
         if not active_lanes:
             return
 
-        # Get minimum buffer length to determine what we can process
-        min_buffer_len = min(len(self.lane_buffers[i]) for i in active_lanes)
-        if min_buffer_len == 0:
+        # For now, let's use a simpler approach: reconstruct from all enabled lanes
+        # that have received data, regardless of sync alignment
+        lanes_with_data = [i for i in range(len(self.data_lanes)) if len(self.lane_buffers[i]) > 0]
+
+        if not lanes_with_data:
             return
 
-        # Reconstruct the distributed data
+        # Debug: log what we have
+        self.logger.debug(f"Multi-lane: Active lanes: {active_lanes}, Lanes with data: {lanes_with_data}")
+        for lane_idx in lanes_with_data:
+            self.logger.debug(f"Multi-lane: Lane {lane_idx} has {len(self.lane_buffers[lane_idx])} bytes: {[f'0x{b:02x}' for b in self.lane_buffers[lane_idx]]}")
+
+        # Reconstruct the distributed data using the same algorithm as TX
+        # TX distributes bytes round-robin: byte 0->lane 0, byte 1->lane 1, etc.
         reconstructed_data = []
-        for byte_idx in range(min_buffer_len):
-            for lane_idx in active_lanes:
-                if byte_idx < len(self.lane_buffers[lane_idx]):
+        max_bytes = max(len(self.lane_buffers[i]) for i in lanes_with_data)
+
+        for byte_idx in range(max_bytes):
+            for lane_idx in range(len(self.data_lanes)):
+                if lane_idx in lanes_with_data and byte_idx < len(self.lane_buffers[lane_idx]):
                     reconstructed_data.append(self.lane_buffers[lane_idx][byte_idx])
 
-        # Check if we can determine packet type and length
+        self.logger.debug(f"Multi-lane: Reconstructed {len(reconstructed_data)} bytes: {[f'0x{b:02x}' for b in reconstructed_data]}")
+
         if len(reconstructed_data) >= 1:
             first_byte = reconstructed_data[0]
             if _is_short_packet_type(first_byte):
@@ -738,28 +842,49 @@ class DPhyRxModel:
                 self.logger.info(f"Multi-lane: Packet complete ({len(packet_data)} bytes)")
 
                 if self.on_data_received:
+                    self.logger.info(f"Multi-lane: Calling on_data_received callback with {len(packet_data)} bytes")
                     await cocotb.start(self.on_data_received(packet_data))
 
+                # Call packet end callback
+                await self._handle_packet_end(0)  # Use lane 0 as representative
+
                 # Remove processed bytes from all lane buffers
-                consumed_bytes_per_lane = expected_length // len(active_lanes)
-                extra_bytes = expected_length % len(active_lanes)
-                for i, lane_idx in enumerate(active_lanes):
-                    bytes_to_remove = consumed_bytes_per_lane + (1 if i < extra_bytes else 0)
-                    self.lane_buffers[lane_idx] = self.lane_buffers[lane_idx][bytes_to_remove:]
+                # Calculate how many bytes each lane contributed
+                total_bytes = len(reconstructed_data)
+                bytes_per_lane = total_bytes // len(self.data_lanes)
+                extra_bytes = total_bytes % len(self.data_lanes)
+
+                for lane_idx in range(len(self.data_lanes)):
+                    if lane_idx in lanes_with_data:
+                        # Each lane contributed bytes_per_lane + 1 if it was one of the first extra_bytes lanes
+                        bytes_to_remove = bytes_per_lane + (1 if lane_idx < extra_bytes else 0)
+                        if bytes_to_remove > 0:
+                            self.lane_buffers[lane_idx] = self.lane_buffers[lane_idx][bytes_to_remove:]
+                            self.logger.debug(f"Multi-lane: Removed {bytes_to_remove} bytes from lane {lane_idx}")
 
     async def _handle_packet_end(self, lane_idx: int):
         """Handle end of packet on a specific lane."""
         if self.lane_processing_packet[lane_idx]:
             self.logger.info(f"Lane {lane_idx}: Packet end detected")
+
+            # Clear all buffers and reset state for this lane
+            self.lane_buffers[lane_idx].clear()
             self.lane_processing_packet[lane_idx] = False
             self.lane_sync_aligned[lane_idx] = False
+            self.lane_packet_lengths[lane_idx] = 0
+            self.lane_byte_buffers[lane_idx] = 0
+            self.lane_bit_counts[lane_idx] = 0
+            self.lane_bit_shifters[lane_idx] = 0
 
             # Check if this is the last active lane
             active_lanes = [i for i in self.enabled_lanes if self.lane_processing_packet[i]]
             if not active_lanes:
                 self.hs_active = False
                 if self.on_packet_end:
+                    self.logger.info(f"Lane {lane_idx}: Calling on_packet_end callback")
                     await cocotb.start(self.on_packet_end())
+                else:
+                    self.logger.warning(f"Lane {lane_idx}: on_packet_end callback not set")
 
     def reset_lane_state(self, lane_idx: int):
         """Reset state for a specific lane."""

@@ -255,10 +255,12 @@ class Csi2RxModel:
         # Process buffered data
         if self.raw_data_buffer:
             raw_data = bytes(self.raw_data_buffer)
-            self.logger.info(f"RX: Processing {len(raw_data)} bytes from buffer")
+            self.logger.info(f"RX: Processing {len(raw_data)} bytes from buffer: {[f'0x{b:02x}' for b in raw_data]}")
             await self._process_raw_data(raw_data)
             self.raw_data_buffer.clear()
             # Don't reset parser here - it should maintain state across packets
+        else:
+            self.logger.warning("RX: _on_phy_packet_end called but raw_data_buffer is empty")
 
     async def _on_phy_data_received(self, byte_data):
         """Handle PHY data reception"""
@@ -289,6 +291,7 @@ class Csi2RxModel:
 
         # Feed data to parser
         new_packets = self.parser.feed_data(raw_data)
+        self.logger.info(f"RX: Parser returned {len(new_packets)} packets")
 
         # Debug: log parsed packets
         for packet in new_packets:
@@ -319,6 +322,7 @@ class Csi2RxModel:
 
         # Store packet
         await self.received_packets.put(packet)
+        self.logger.info(f"RX: Queued packet: VC={packet.virtual_channel}, DT=0x{packet.data_type:02x}, Queue size now: {self.received_packets.qsize()}")
 
         # Process based on packet type
         try:
@@ -441,15 +445,23 @@ class Csi2RxModel:
         Returns:
             Next packet or None if timeout
         """
+        self.logger.info(f"RX: get_next_packet called, queue size: {self.received_packets.qsize()}")
+
         if timeout_ns:
             try:
-                return await with_timeout(self.received_packets.get(), timeout_ns, 'ns')
+                packet = await with_timeout(self.received_packets.get(), timeout_ns, 'ns')
+                self.logger.info(f"RX: get_next_packet returning packet: VC={packet.virtual_channel}, DT=0x{packet.data_type:02x}")
+                return packet
             except cocotb.result.SimTimeoutError:
+                self.logger.warning(f"RX: get_next_packet timeout after {timeout_ns}ns")
                 return None
         else:
             if self.received_packets.empty():
+                self.logger.warning("RX: get_next_packet called but queue is empty")
                 return None
-            return await self.received_packets.get()
+            packet = await self.received_packets.get()
+            self.logger.info(f"RX: get_next_packet returning packet: VC={packet.virtual_channel}, DT=0x{packet.data_type:02x}")
+            return packet
 
     async def get_next_frame(self, timeout_ns: Optional[int] = None) -> Optional[dict]:
         """

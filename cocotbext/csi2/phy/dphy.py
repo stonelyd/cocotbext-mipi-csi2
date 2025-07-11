@@ -23,10 +23,9 @@ THE SOFTWARE.
 """
 
 import cocotb
-from cocotb.triggers import Timer, RisingEdge, FallingEdge, Edge, First
-from cocotb.clock import Clock
+from cocotb.triggers import Timer, Edge
 import asyncio
-from typing import List, Optional, Callable
+from typing import List
 import logging
 from enum import Enum
 from ..config import Csi2Config, Csi2PhyConfig
@@ -216,24 +215,6 @@ class DPhyTxTransmitter:
         self.lp_active = True
         self.logger.debug(f"Lane {self.lane.name}: Set LP-11 state for exit")
 
-    async def _hs_exit_sequence(self):
-        """Execute HS exit sequence - LEGACY METHOD"""
-        self.logger.debug(f"Lane {self.lane.name}: Starting HS exit")
-
-        # Drive HS-0 state during HS trail period as per D-PHY spec
-        self.sig_p.value = 0
-        self.sig_n.value = 1
-        self.current_state = DPhyState.HS_0
-
-        # HS trail
-        await Timer(self.phy_config.t_hs_trail, units='ns')
-
-        # LP-11 (HS exit)
-        self._set_lp_state(DPhyState.LP_11)
-        self.hs_active = False
-        self.lp_active = True
-        await Timer(self.phy_config.t_hs_exit, units='ns')
-
     async def send_hs_data(self, data: bytes):
         """
         Send HS data on this lane
@@ -269,12 +250,6 @@ class DPhyTxTransmitter:
             # Use DDR timing (half the bit period)
             await Timer(int(self.ddr_bit_period_ns), units='ns')
 
-    async def send_lp_sequence(self, sequence: List[int]):
-        """Send LP sequence"""
-        for state in sequence:
-            self._set_lp_state(state)
-            await Timer(100, units='ns')  # LP state duration
-
     async def start_hs_transmission(self):
         """Start HS transmission on this lane"""
         await self._hs_prepare_sequence()
@@ -283,227 +258,51 @@ class DPhyTxTransmitter:
         """Stop HS transmission on this lane"""
         await self._hs_exit_sequence()
 
+    async def _hs_prepare_sequence(self):
+        """Execute HS prepare sequence"""
+        self.logger.debug(f"Lane {self.lane.name}: Starting HS prepare")
 
-class DPhyRxReceiver:
-    """D-PHY Receiver Model"""
+        # LP-01 state
+        self._set_lp_state(DPhyState.LP_01)
+        await Timer(50, units='ns')  # LP-01 duration
 
-    def __init__(self, bus: Csi2DPhyBus, config: Csi2Config,
-                 phy_config: Csi2PhyConfig, lane: DPhyLane):
-        """
-        Initialize D-PHY receiver
+        # LP-00 state
+        self._set_lp_state(DPhyState.LP_00)
+        await Timer(60, units='ns')  # LP-00 duration
 
-        Args:
-            bus: D-PHY bus interface
-            config: CSI-2 configuration
-            phy_config: PHY-specific configuration
-            lane: Lane object with type and index
-        """
-        self.bus = bus
-        self.config = config
-        self.phy_config = phy_config
-        self.lane = lane
+        # HS prepare
+        await Timer(self.phy_config.t_hs_prepare, units='ns')
 
-        # Internal state
-        self.current_state = DPhyState.LP_11
+        # HS-0 state
+        self.sig_p.value = 0
+        self.sig_n.value = 1
+        self.current_state = DPhyState.HS_0
+
+        # HS zero
+        await Timer(self.phy_config.t_hs_zero, units='ns')
+
+        # Send sync sequence
+        await self._send_sync_sequence()
+        self.hs_active = True
+        self.lp_active = False
+
+    async def _hs_exit_sequence(self):
+        """Execute HS exit sequence"""
+        self.logger.debug(f"Lane {self.lane.name}: Starting HS exit")
+
+        # Drive HS-0 state during HS trail period as per D-PHY spec
+        self.sig_p.value = 0
+        self.sig_n.value = 1
+        self.current_state = DPhyState.HS_0
+
+        # HS trail
+        await Timer(self.phy_config.t_hs_trail, units='ns')
+
+        # LP-11 (HS exit)
+        self._set_lp_state(DPhyState.LP_11)
         self.hs_active = False
         self.lp_active = True
-
-        # Signal handles - clock lane ignores index
-        if lane.lane_type == DPhyLaneType.CLOCK:
-            self.sig_p = getattr(bus, 'clk_p', None)
-            self.sig_n = getattr(bus, 'clk_n', None)
-        else:
-            # Data lanes use their index
-            self.sig_p = getattr(bus, f'data{lane.index}_p', None)
-            self.sig_n = getattr(bus, f'data{lane.index}_n', None)
-
-        if not self.sig_p or not self.sig_n:
-            raise Csi2PhyError(f"Missing D-PHY signals for {lane.name}")
-
-        # Debug: log signal handles
-        self.logger = logging.getLogger(f'cocotbext.csi2.dphy.rx.{lane.name}')
-        self.logger.info(f"Lane {self.lane.name}: RX signal handles - p: {self.sig_p.value}, n: {self.sig_n.value}")
-
-        # Log initial signal state
-        try:
-            initial_p = int(self.sig_p.value)
-            initial_n = int(self.sig_n.value)
-            self.logger.info(f"Lane {self.lane.name}: RX initial signal state - p: {initial_p}, n: {initial_n}")
-        except (ValueError, TypeError):
-            self.logger.info(f"Lane {self.lane.name}: RX initial signal state - p: z, n: z")
-
-        # Callbacks
-        self.on_hs_start = None
-        self.on_hs_end = None
-        self.on_data_received = None
-
-        # Timing tracking for automatic LP_00 to HS transition
-        self.lp00_entry_time = None
-        self.hs_transition_task = None
-        self.ui_ns = 1000.0 / config.bit_rate_mbps  # Unit interval in nanoseconds
-
-    def _decode_lp_state(self) -> int:
-        """Decode current LP state from signals"""
-        try:
-            p_val = int(self.sig_p.value)
-            n_val = int(self.sig_n.value)
-        except ValueError:
-            # Handle 'z' (high impedance) values - treat as LP-11
-            return DPhyState.LP_11
-
-        # Debug: log signal values occasionally (reduced frequency)
-        if hasattr(self, '_debug_counter'):
-            self._debug_counter += 1
-        else:
-            self._debug_counter = 0
-
-        if self._debug_counter % 1000 == 0:  # Log every 1000th call instead of 100th
-            self.logger.debug(f"Lane {self.lane.name}: Signal values p={p_val}, n={n_val}")
-
-        if p_val == 0 and n_val == 0:
-            return DPhyState.LP_00
-        elif p_val == 0 and n_val == 1:
-            return DPhyState.LP_01
-        elif p_val == 1 and n_val == 0:
-            return DPhyState.LP_10
-        elif p_val == 1 and n_val == 1:
-            return DPhyState.LP_11
-        else:
-            # Invalid state - treat as LP-11
-            return DPhyState.LP_11
-
-    def _decode_hs_state(self) -> int:
-        """Decode current HS state from signals"""
-        try:
-            p_val = int(self.sig_p.value)
-            n_val = int(self.sig_n.value)
-        except ValueError:
-            # Handle 'z' (high impedance) values - treat as invalid
-            return -1
-
-        # HS-0: p=0, n=1; HS-1: p=1, n=0
-        if p_val == 0 and n_val == 1:
-            return DPhyState.HS_0
-        elif p_val == 1 and n_val == 0:
-            return DPhyState.HS_1
-        else:
-            # Invalid HS state
-            return -1
-
-    def _decode_current_state(self) -> int:
-        """Decode current state based on current mode (LP or HS)"""
-        if self.hs_active:
-            # In HS mode, decode HS state
-            return self._decode_hs_state()
-        else:
-            # In LP mode, decode LP state
-            return self._decode_lp_state()
-
-    def _is_valid_state_transition(self, from_state: int, to_state: int) -> bool:
-        """Validate state transition according to D-PHY protocol rules"""
-        # LP_00 can only transition to HS states (HS_0 or HS_1)
-        if from_state == DPhyState.LP_00:
-            return to_state in [DPhyState.HS_0, DPhyState.HS_1]
-
-        # HS states can transition to any LP state (typically LP_11 for exit)
-        if from_state in [DPhyState.HS_0, DPhyState.HS_1]:
-            return to_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]
-
-        # Other LP states can transition to LP_00 (for HS entry preparation) or other LP states
-        if from_state in [DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]:
-            return to_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]
-
-        # Invalid from_state
-        return False
-
-    async def _schedule_hs_transition(self):
-        """Schedule automatic transition from LP_00 to HS after timing delay"""
-        # Calculate delay: 86ns + 6*UI
-        delay_ns = 86 + 6 * self.ui_ns
-        self.logger.info(f"Lane {self.lane.name}: Scheduling HS transition in {delay_ns:.2f}ns (86ns + 6*{self.ui_ns:.2f}ns)")
-
-        # Wait for the calculated delay
-        await Timer(int(delay_ns), units='ns')
-
-        # Check if we're still in LP_00 state (transition hasn't been cancelled)
-        if self.current_state == DPhyState.LP_00 and not self.hs_active:
-            self.logger.info(f"Lane {self.lane.name}: Executing automatic LP_00 -> HS transition")
-
-            # Set HS mode
-            self.hs_active = True
-            self.lp_active = False
-
-            # Trigger HS start callback
-            if self.on_hs_start:
-                # Handle both sync and async callbacks
-                if asyncio.iscoroutinefunction(self.on_hs_start):
-                    await self.on_hs_start()
-                else:
-                    self.on_hs_start()
-        else:
-            self.logger.debug(f"Lane {self.lane.name}: HS transition cancelled (no longer in LP_00 or already in HS mode)")
-
-    async def update_state(self):
-        """Update current state and detect HS mode transitions"""
-        previous_state = self.current_state
-        previous_hs_active = self.hs_active
-
-        # Decode current state
-        new_state = self._decode_current_state()
-
-        # Validate state transition before updating
-        if new_state != -1:  # Valid state detected
-            if self._is_valid_state_transition(previous_state, new_state):
-                self.current_state = new_state
-
-                # Handle LP_00 entry - schedule automatic HS transition
-                if new_state == DPhyState.LP_00 and previous_state != DPhyState.LP_00:
-                    self.logger.info(f"Lane {self.lane.name}: Entered LP_00, scheduling automatic HS transition")
-
-                    # Cancel any existing transition task
-                    if self.hs_transition_task and not self.hs_transition_task.done():
-                        self.hs_transition_task.cancel()
-
-                    # Schedule new HS transition
-                    self.hs_transition_task = cocotb.start_soon(self._schedule_hs_transition())
-
-                # Detect immediate HS mode transitions (from signal changes)
-                elif not self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]:
-                    # Cancel any pending automatic transition
-                    if self.hs_transition_task and not self.hs_transition_task.done():
-                        self.hs_transition_task.cancel()
-
-                    # Entering HS mode immediately
-                    self.hs_active = True
-                    self.lp_active = False
-                    self.logger.info(f"Lane {self.lane.name}: Entering HS mode immediately (state: {DPhyState.name(new_state)})")
-
-                    if self.on_hs_start:
-                        # Handle both sync and async callbacks
-                        if asyncio.iscoroutinefunction(self.on_hs_start):
-                            await self.on_hs_start()
-                        else:
-                            self.on_hs_start()
-
-                elif self.hs_active and new_state in [DPhyState.LP_00, DPhyState.LP_01, DPhyState.LP_10, DPhyState.LP_11]:
-                    # Exiting HS mode
-                    self.hs_active = False
-                    self.lp_active = True
-                    self.logger.info(f"Lane {self.lane.name}: Exiting HS mode, entering LP mode (state: {DPhyState.name(new_state)})")
-
-                    if self.on_hs_end:
-                        # Handle both sync and async callbacks
-                        if asyncio.iscoroutinefunction(self.on_hs_end):
-                            await self.on_hs_end()
-                        else:
-                            self.on_hs_end()
-
-                # Log state changes (but suppress HS-0/HS-1 transitions to reduce noise)
-                if previous_state != new_state and not (self.hs_active and new_state in [DPhyState.HS_0, DPhyState.HS_1]):
-                    self.logger.info(f"Lane {self.lane.name}: State change {DPhyState.name(previous_state)} -> {DPhyState.name(new_state)}")
-            # else:
-            #     # Invalid state transition - log warning but don't update state
-            #     self.logger.warning(f"Lane {self.lane.name}: Invalid state transition {DPhyState.name(previous_state)} -> {DPhyState.name(new_state)} (ignored)")
+        await Timer(self.phy_config.t_hs_exit, units='ns')
 
 
 class DPhyTxModel:
@@ -727,9 +526,6 @@ class DPhyRxModel:
         # Create receivers for clock and data lanes
         self.clock_lane = DPhyLane(DPhyLaneType.CLOCK)
         self.data_lanes = [DPhyLane(DPhyLaneType.DATA, i) for i in range(config.lane_count)]
-        # The DPhyRxReceiver class is a low-level utility; we don't need instances for the model logic itself
-        # self.clock_rx = DPhyRxReceiver(bus, config, self.phy_config, self.clock_lane)
-        # self.data_rx = [DPhyRxReceiver(bus, config, self.phy_config, lane) for lane in self.data_lanes]
 
         # Callbacks
         self.on_packet_start = None
@@ -896,9 +692,3 @@ class DPhyRxModel:
         self.on_packet_start = on_packet_start
         self.on_packet_end = on_packet_end
         self.on_data_received = on_data_received
-
-
-# Legacy aliases for backward compatibility
-DPhyTx = DPhyTxTransmitter
-DPhyRx = DPhyRxReceiver
-DPhyModel = DPhyTxModel  # Default to TX model for backward compatibility

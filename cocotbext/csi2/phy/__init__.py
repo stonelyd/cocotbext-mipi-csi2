@@ -23,21 +23,15 @@ THE SOFTWARE.
 """
 
 from .dphy import (
-    DPhyTxTransmitter, DPhyRxReceiver, DPhyTxModel, DPhyRxModel,
-    DPhyTx, DPhyRx, DPhyModel  # Legacy aliases
+    DPhyTxTransmitter, DPhyTxModel, DPhyRxModel
 )
 from .cphy import CPhyTx, CPhyRx, CPhyModel
 
 __all__ = [
-    # New D-PHY classes
+    # D-PHY classes
     "DPhyTxTransmitter",
-    "DPhyRxReceiver",
     "DPhyTxModel",
     "DPhyRxModel",
-    # Legacy D-PHY aliases
-    "DPhyTx",
-    "DPhyRx",
-    "DPhyModel",
     # C-PHY classes
     "CPhyTx",
     "CPhyRx",

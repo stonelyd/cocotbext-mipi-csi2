@@ -23,13 +23,12 @@ THE SOFTWARE.
 """
 
 from .dphy import (
-    DPhyTxTransmitter, DPhyTxModel, DPhyRxModel
+    DPhyTxModel, DPhyRxModel
 )
 from .cphy import CPhyTx, CPhyRx, CPhyModel
 
 __all__ = [
     # D-PHY classes
-    "DPhyTxTransmitter",
     "DPhyTxModel",
     "DPhyRxModel",
     # C-PHY classes

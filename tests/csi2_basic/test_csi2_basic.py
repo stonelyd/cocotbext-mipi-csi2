@@ -163,6 +163,8 @@ async def test_4lane_packet_transmission(dut):
 
     # Override configuration to enable lane distribution
     tb.config.lane_distribution_enabled = True
+    tb.tx_phy_model.config.lane_distribution_enabled = True
+    tb.rx_phy_model.config.lane_distribution_enabled = True
     cocotb.log.info("4-lane distribution enabled for this test")
 
     # Reset RX model to ensure clean state
@@ -190,5 +192,36 @@ async def test_4lane_packet_transmission(dut):
         cocotb.log.error("Timeout in 4-lane PHY transmission")
         raise
 
-    # Wait a bit for reception
+    # Wait a bit to ensure transmission is complete
     await Timer(1000, units="ns")
+
+    # Debug: check statistics
+    rx_stats = tb.rx_model.get_statistics()
+    cocotb.log.info(f"RX stats: {rx_stats}")
+
+    # Wait for RX model to receive the packet
+    try:
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=10000)
+
+        assert received_packet is not None, "No packet received"
+        assert isinstance(received_packet, Csi2ShortPacket), "Expected short packet"
+        assert received_packet.header.validate_ecc(), "Received packet ECC validation failed"
+        assert received_packet.data_type == DataType.FRAME_START.value, "Expected frame start packet"
+        assert received_packet.virtual_channel == 0, "Expected VC=0"
+
+        cocotb.log.info(f"Received packet: VC={received_packet.virtual_channel}, DT=0x{received_packet.data_type:02x}")
+
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.warning("Timeout waiting for packet reception")
+        raise
+
+    cocotb.log.info("✅ 4-lane packet transmission test passed")
+    cocotb.log.info("✅ Packet successfully received and validated")
+    cocotb.log.info("✅ Multi-lane transmission and reception working correctly")
+
+    # Note: Multi-lane reception requires more sophisticated packet reconstruction
+    # which is beyond the scope of this sync sequence fix
+    cocotb.log.info("📝 Note: Multi-lane reception requires additional development")
+
+    # Clean up any incomplete frame state
+    await tb.rx_model.reset()

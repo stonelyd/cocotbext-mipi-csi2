@@ -334,7 +334,9 @@ class DPhyTxModel:
                 signals['n'].value = 1
 
             # Use DDR timing (half the bit period)
-            await Timer(int(self.ddr_bit_period_ns), units='ns')
+            # Ensure minimum timer resolution of 1ns to avoid undefined behavior
+            timer_value = max(1, int(self.ddr_bit_period_ns))
+            await Timer(timer_value, units='ns')
 
     async def _start_hs_transmission(self, lane: DPhyLane):
         """Start HS transmission on a specific lane"""
@@ -429,10 +431,17 @@ class DPhyTxModel:
             from ..utils import bytes_to_lanes
             lane_data = bytes_to_lanes(data, len(self.data_lanes))
 
-            # Send data on all lanes sequentially (cocotb compatibility)
+            # Send data on all lanes simultaneously (parallel transmission)
+            data_tasks = []
             for lane, lane_bytes in zip(self.data_lanes, lane_data):
                 self.logger.info(f"TX PHY: Sending {len(lane_bytes)} bytes to {lane.name}")
-                await self._send_hs_data_on_lane(lane, lane_bytes)
+                task = cocotb.start_soon(self._send_hs_data_on_lane(lane, lane_bytes))
+                data_tasks.append(task)
+
+            # Wait for all lane transmissions to complete
+            for task in data_tasks:
+                await task
+            self.logger.info("TX PHY: All lanes data transmission complete")
         else:
             # Send all data on the first lane (no distribution)
             self.logger.info(f"TX PHY: Sending {len(data)} bytes to {self.data_lanes[0].name}")
@@ -642,37 +651,101 @@ class DPhyRxModel:
             self.lane_buffers[lane_idx].append(byte_val)
             self.logger.debug(f"Lane {lane_idx}: Received byte 0x{byte_val:02x}")
 
-            # Check if this is the first byte and indicates a long packet
-            if len(self.lane_buffers[lane_idx]) == 1:
-                if _is_short_packet_type(byte_val):
-                    self.lane_packet_lengths[lane_idx] = 4
-                    self.logger.debug(f"Lane {lane_idx}: Short packet detected (4 bytes)")
-                else:
-                    self.lane_packet_lengths[lane_idx] = -1
-                    self.logger.debug(f"Lane {lane_idx}: Long packet detected (length TBD)")
+            if self.config.lane_distribution_enabled and len(self.data_lanes) > 1:
+                # Multi-lane mode: handle distributed data
+                await self._handle_distributed_data()
+            else:
+                # Single-lane mode: handle complete packets on this lane
+                await self._handle_single_lane_data(lane_idx, byte_val)
 
-            # For long packets, determine length from header
-            if self.lane_packet_lengths[lane_idx] == -1 and len(self.lane_buffers[lane_idx]) >= 4:
+    async def _handle_single_lane_data(self, lane_idx: int, byte_val: int):
+        """Handle data reception for single-lane mode"""
+        # Check if this is the first byte and indicates a long packet
+        if len(self.lane_buffers[lane_idx]) == 1:
+            if _is_short_packet_type(byte_val):
+                self.lane_packet_lengths[lane_idx] = 4
+                self.logger.debug(f"Lane {lane_idx}: Short packet detected (4 bytes)")
+            else:
+                self.lane_packet_lengths[lane_idx] = -1
+                self.logger.debug(f"Lane {lane_idx}: Long packet detected (length TBD)")
+
+        # For long packets, determine length from header
+        if self.lane_packet_lengths[lane_idx] == -1 and len(self.lane_buffers[lane_idx]) >= 4:
+            try:
+                header_bytes = bytes(self.lane_buffers[lane_idx][:4])
+                header = Csi2PacketHeader.from_bytes(header_bytes)
+                self.lane_packet_lengths[lane_idx] = 4 + header.word_count + 2  # Header + Data + CRC
+                self.logger.debug(f"Lane {lane_idx}: Long packet length determined: {self.lane_packet_lengths[lane_idx]} bytes")
+            except Exception as e:
+                self.logger.warning(f"Lane {lane_idx}: Failed to parse header: {e}")
+                self.lane_packet_lengths[lane_idx] = 4
+
+        # Check if packet is complete
+        if self.lane_packet_lengths[lane_idx] > 0 and len(self.lane_buffers[lane_idx]) >= self.lane_packet_lengths[lane_idx]:
+            packet_data = bytes(self.lane_buffers[lane_idx][:self.lane_packet_lengths[lane_idx]])
+            self.logger.info(f"Lane {lane_idx}: Packet complete ({len(packet_data)} bytes)")
+
+            if self.on_data_received:
+                await cocotb.start(self.on_data_received(packet_data))
+
+            # Reset for next packet
+            self.lane_buffers[lane_idx] = self.lane_buffers[lane_idx][self.lane_packet_lengths[lane_idx]:]
+            self.lane_packet_lengths[lane_idx] = 0
+
+    async def _handle_distributed_data(self):
+        """Handle data reception for multi-lane distribution mode"""
+        # Check if we have data on all active lanes
+        active_lanes = [i for i in range(len(self.data_lanes)) if self.lane_processing_packet[i]]
+        if not active_lanes:
+            return
+
+        # Get minimum buffer length to determine what we can process
+        min_buffer_len = min(len(self.lane_buffers[i]) for i in active_lanes)
+        if min_buffer_len == 0:
+            return
+
+        # Reconstruct the distributed data
+        reconstructed_data = []
+        for byte_idx in range(min_buffer_len):
+            for lane_idx in active_lanes:
+                if byte_idx < len(self.lane_buffers[lane_idx]):
+                    reconstructed_data.append(self.lane_buffers[lane_idx][byte_idx])
+
+        # Check if we can determine packet type and length
+        if len(reconstructed_data) >= 1:
+            first_byte = reconstructed_data[0]
+            if _is_short_packet_type(first_byte):
+                expected_length = 4
+                self.logger.debug(f"Multi-lane: Short packet detected (4 bytes total)")
+            else:
+                expected_length = -1
+                self.logger.debug(f"Multi-lane: Long packet detected (length TBD)")
+
+            # For long packets, determine length from header once we have 4 bytes
+            if expected_length == -1 and len(reconstructed_data) >= 4:
                 try:
-                    header_bytes = bytes(self.lane_buffers[lane_idx][:4])
+                    header_bytes = bytes(reconstructed_data[:4])
                     header = Csi2PacketHeader.from_bytes(header_bytes)
-                    self.lane_packet_lengths[lane_idx] = 4 + header.word_count + 2  # Header + Data + CRC
-                    self.logger.debug(f"Lane {lane_idx}: Long packet length determined: {self.lane_packet_lengths[lane_idx]} bytes")
+                    expected_length = 4 + header.word_count + 2  # Header + Data + CRC
+                    self.logger.debug(f"Multi-lane: Long packet length determined: {expected_length} bytes")
                 except Exception as e:
-                    self.logger.warning(f"Lane {lane_idx}: Failed to parse header: {e}")
-                    self.lane_packet_lengths[lane_idx] = 4
+                    self.logger.warning(f"Multi-lane: Failed to parse header: {e}")
+                    expected_length = 4
 
             # Check if packet is complete
-            if self.lane_packet_lengths[lane_idx] > 0 and len(self.lane_buffers[lane_idx]) >= self.lane_packet_lengths[lane_idx]:
-                packet_data = bytes(self.lane_buffers[lane_idx][:self.lane_packet_lengths[lane_idx]])
-                self.logger.info(f"Lane {lane_idx}: Packet complete ({len(packet_data)} bytes)")
+            if expected_length > 0 and len(reconstructed_data) >= expected_length:
+                packet_data = bytes(reconstructed_data[:expected_length])
+                self.logger.info(f"Multi-lane: Packet complete ({len(packet_data)} bytes)")
 
                 if self.on_data_received:
                     await cocotb.start(self.on_data_received(packet_data))
 
-                # Reset for next packet
-                self.lane_buffers[lane_idx] = self.lane_buffers[lane_idx][self.lane_packet_lengths[lane_idx]:]
-                self.lane_packet_lengths[lane_idx] = 0
+                # Remove processed bytes from all lane buffers
+                consumed_bytes_per_lane = expected_length // len(active_lanes)
+                extra_bytes = expected_length % len(active_lanes)
+                for i, lane_idx in enumerate(active_lanes):
+                    bytes_to_remove = consumed_bytes_per_lane + (1 if i < extra_bytes else 0)
+                    self.lane_buffers[lane_idx] = self.lane_buffers[lane_idx][bytes_to_remove:]
 
     async def _handle_packet_end(self, lane_idx: int):
         """Handle end of packet on a specific lane."""
@@ -714,11 +787,24 @@ class DPhyRxModel:
         self.enabled_lanes.discard(lane_idx)
 
     def get_received_data(self) -> bytes:
-        # Note: This assumes single-lane operation for simplicity.
-        # Multi-lane would require a more sophisticated byte de-skew and merge algorithm.
-        if 0 in self.lane_buffers:
-            return bytes(self.lane_buffers[0])
-        return b''
+        """Get received data, merging from all lanes if lane distribution is enabled"""
+        if self.config.lane_distribution_enabled and len(self.data_lanes) > 1:
+            # Multi-lane: merge data from all lanes
+            lane_data = []
+            for i in range(len(self.data_lanes)):
+                if i in self.lane_buffers:
+                    lane_data.append(bytes(self.lane_buffers[i]))
+                else:
+                    lane_data.append(b'')
+
+            # Merge lanes back to original byte stream
+            from ..utils import lanes_to_bytes
+            return lanes_to_bytes(lane_data)
+        else:
+            # Single-lane operation
+            if 0 in self.lane_buffers:
+                return bytes(self.lane_buffers[0])
+            return b''
 
     def set_rx_callbacks(self, on_packet_start=None, on_packet_end=None, on_data_received=None):
         """Set receiver callbacks."""

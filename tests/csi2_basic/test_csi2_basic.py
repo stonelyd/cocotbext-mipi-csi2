@@ -90,7 +90,7 @@ class TB:
 
 
 @cocotb.test()
-async def test_basic_packet_transmission(dut):
+async def test_1lane_frame_start_packet_transmission(dut):
     """Test basic CSI-2 packet transmission and reception"""
     setup_logging()
     tb = TB(dut)
@@ -152,7 +152,7 @@ async def test_basic_packet_transmission(dut):
     await tb.rx_model.reset()
 
 @cocotb.test()
-async def test_4lane_packet_transmission(dut):
+async def test_4lane_frame_start_packet_transmission(dut):
     """Test CSI-2 packet transmission and reception with 4-lane distribution enabled"""
     setup_logging()
     tb = TB(dut)
@@ -286,6 +286,150 @@ async def test_4lane_frame_end_transmission(dut):
 
     except cocotb.result.SimTimeoutError:
         cocotb.log.warning("Timeout waiting for frame end packet reception")
+        raise
+
+    # Clean up any incomplete frame state
+    await tb.rx_model.reset()
+
+@cocotb.test()
+async def test_4lane_line_start_transmission(dut):
+    """Test CSI-2 line start packet transmission and reception with 4-lane distribution enabled"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+
+    # Configure with 4-lane distribution enabled
+    await tb.configure_csi2(lane_count=4, bit_rate_mbps=1000)
+
+    # Override configuration to enable lane distribution
+    tb.config.lane_distribution_enabled = True
+    tb.tx_phy_model.config.lane_distribution_enabled = True
+    tb.rx_phy_model.config.lane_distribution_enabled = True
+    cocotb.log.info("4-lane distribution enabled for this test")
+
+    # Reset RX model to ensure clean state
+    await tb.rx_model.reset()
+
+    # Disable frame assembly to avoid frame number mismatch errors
+    # since we're only testing packet transmission/reception, not frame assembly
+    tb.rx_model.enable_frame_assembly(False)
+    cocotb.log.info("Frame assembly disabled for this test")
+
+    # Test direct PHY transmission with timeout
+    line_start = Csi2ShortPacket.line_start(virtual_channel=0, line_number=1)
+    packet_bytes = line_start.to_bytes()
+
+    cocotb.log.info(f"Testing 4-lane line start PHY transmission: {len(packet_bytes)} bytes")
+    cocotb.log.info(f"Packet bytes: {[f'{b:02x}' for b in packet_bytes]}")
+
+    # Send directly via TX PHY with timeout
+    try:
+        cocotb.log.info("Attempting to start 4-lane line start packet transmission")
+        await with_timeout(tb.tx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("4-lane line start packet transmission started")
+        cocotb.log.info("Attempting to send line start packet data across 4 lanes")
+        await with_timeout(tb.tx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
+        cocotb.log.info("4-lane line start packet data sent")
+        cocotb.log.info("Attempting to stop 4-lane line start packet transmission")
+        await with_timeout(tb.tx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("4-lane line start PHY transmission completed")
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.error("Timeout in 4-lane line start PHY transmission")
+        raise
+
+    # Wait a bit to ensure transmission is complete
+    await Timer(1000, units="ns")
+
+    # Debug: check statistics
+    rx_stats = tb.rx_model.get_statistics()
+    cocotb.log.info(f"RX stats: {rx_stats}")
+
+    # Wait for RX model to receive the packet
+    try:
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=10000)
+
+        assert received_packet is not None, "No packet received"
+        assert isinstance(received_packet, Csi2ShortPacket), "Expected short packet"
+        assert received_packet.header.validate_ecc(), "Received packet ECC validation failed"
+        assert received_packet.data_type == DataType.LINE_START.value, "Expected line start packet"
+        assert received_packet.virtual_channel == 0, "Expected VC=0"
+
+        cocotb.log.info(f"Received line start packet: VC={received_packet.virtual_channel}, DT=0x{received_packet.data_type:02x}")
+
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.warning("Timeout waiting for line start packet reception")
+        raise
+
+    # Clean up any incomplete frame state
+    await tb.rx_model.reset()
+
+@cocotb.test()
+async def test_4lane_line_end_transmission(dut):
+    """Test CSI-2 line end packet transmission and reception with 4-lane distribution enabled"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+
+    # Configure with 4-lane distribution enabled
+    await tb.configure_csi2(lane_count=4, bit_rate_mbps=1000)
+
+    # Override configuration to enable lane distribution
+    tb.config.lane_distribution_enabled = True
+    tb.tx_phy_model.config.lane_distribution_enabled = True
+    tb.rx_phy_model.config.lane_distribution_enabled = True
+    cocotb.log.info("4-lane distribution enabled for this test")
+
+    # Reset RX model to ensure clean state
+    await tb.rx_model.reset()
+
+    # Disable frame assembly to avoid frame number mismatch errors
+    # since we're only testing packet transmission/reception, not frame assembly
+    tb.rx_model.enable_frame_assembly(False)
+    cocotb.log.info("Frame assembly disabled for this test")
+
+    # Test direct PHY transmission with timeout
+    line_end = Csi2ShortPacket.line_end(virtual_channel=0, line_number=1)
+    packet_bytes = line_end.to_bytes()
+
+    cocotb.log.info(f"Testing 4-lane line end PHY transmission: {len(packet_bytes)} bytes")
+    cocotb.log.info(f"Packet bytes: {[f'{b:02x}' for b in packet_bytes]}")
+
+    # Send directly via TX PHY with timeout
+    try:
+        cocotb.log.info("Attempting to start 4-lane line end packet transmission")
+        await with_timeout(tb.tx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("4-lane line end packet transmission started")
+        cocotb.log.info("Attempting to send line end packet data across 4 lanes")
+        await with_timeout(tb.tx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
+        cocotb.log.info("4-lane line end packet data sent")
+        cocotb.log.info("Attempting to stop 4-lane line end packet transmission")
+        await with_timeout(tb.tx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("4-lane line end PHY transmission completed")
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.error("Timeout in 4-lane line end PHY transmission")
+        raise
+
+    # Wait a bit to ensure transmission is complete
+    await Timer(1000, units="ns")
+
+    # Debug: check statistics
+    rx_stats = tb.rx_model.get_statistics()
+    cocotb.log.info(f"RX stats: {rx_stats}")
+
+    # Wait for RX model to receive the packet
+    try:
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=10000)
+
+        assert received_packet is not None, "No packet received"
+        assert isinstance(received_packet, Csi2ShortPacket), "Expected short packet"
+        assert received_packet.header.validate_ecc(), "Received packet ECC validation failed"
+        assert received_packet.data_type == DataType.LINE_END.value, "Expected line end packet"
+        assert received_packet.virtual_channel == 0, "Expected VC=0"
+
+        cocotb.log.info(f"Received line end packet: VC={received_packet.virtual_channel}, DT=0x{received_packet.data_type:02x}")
+
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.warning("Timeout waiting for line end packet reception")
         raise
 
     # Clean up any incomplete frame state

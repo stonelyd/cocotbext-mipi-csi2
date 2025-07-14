@@ -910,37 +910,37 @@ class DPhyRxModel:
 
         # Log detailed state for all lanes
         for lane_idx in range(len(self.data_lanes)):
-            self.logger.info(f"Multi-lane: Lane {lane_idx} - "
+            self.logger.debug(f"Multi-lane: Lane {lane_idx} - "
                            f"processing_packet: {self.lane_processing_packet[lane_idx]}, "
                            f"sync_aligned: {self.lane_sync_aligned[lane_idx]}, "
                            f"buffer_size: {len(self.lane_buffers[lane_idx])}, "
                            f"rx_state: {self.lane_rx_state[lane_idx].name}")
 
         for lane_idx in lanes_with_data:
-            self.logger.info(f"Multi-lane: Lane {lane_idx} has {len(self.lane_buffers[lane_idx])} bytes: {[f'0x{b:02x}' for b in self.lane_buffers[lane_idx]]}")
+            self.logger.debug(f"Multi-lane: Lane {lane_idx} has {len(self.lane_buffers[lane_idx])} bytes: {[f'0x{b:02x}' for b in self.lane_buffers[lane_idx]]}")
 
         # Reconstruct the distributed data using the same algorithm as TX
         # TX distributes bytes round-robin: byte 0->lane 0, byte 1->lane 1, etc.
         reconstructed_data = []
         max_bytes = max(len(self.lane_buffers[i]) for i in lanes_with_data)
 
-        self.logger.info(f"Multi-lane: Reconstructing with max_bytes={max_bytes}")
+        self.logger.debug(f"Multi-lane: Reconstructing with max_bytes={max_bytes}")
 
         for byte_idx in range(max_bytes):
             for lane_idx in range(len(self.data_lanes)):
                 if lane_idx in lanes_with_data and byte_idx < len(self.lane_buffers[lane_idx]):
                     reconstructed_data.append(self.lane_buffers[lane_idx][byte_idx])
 
-        self.logger.info(f"Multi-lane: Reconstructed {len(reconstructed_data)} bytes: {[f'0x{b:02x}' for b in reconstructed_data]}")
+        self.logger.debug(f"Multi-lane: Reconstructed {len(reconstructed_data)} bytes: {[f'0x{b:02x}' for b in reconstructed_data]}")
 
         if len(reconstructed_data) >= 1:
             first_byte = reconstructed_data[0]
             if _is_short_packet_type(first_byte):
                 expected_length = 4
-                self.logger.info(f"Multi-lane: Short packet detected (4 bytes total)")
+                self.logger.debug(f"Multi-lane: Short packet detected (4 bytes total)")
             else:
                 expected_length = -1
-                self.logger.info(f"Multi-lane: Long packet detected (length TBD)")
+                self.logger.debug(f"Multi-lane: Long packet detected (length TBD)")
 
             # For long packets, determine length from header once we have 4 bytes
             if expected_length == -1 and len(reconstructed_data) >= 4:

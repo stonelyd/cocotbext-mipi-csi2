@@ -215,13 +215,6 @@ async def test_4lane_packet_transmission(dut):
         cocotb.log.warning("Timeout waiting for packet reception")
         raise
 
-    cocotb.log.info("✅ 4-lane packet transmission test passed")
-    cocotb.log.info("✅ Packet successfully received and validated")
-    cocotb.log.info("✅ Multi-lane transmission and reception working correctly")
-
-    # Note: Multi-lane reception requires more sophisticated packet reconstruction
-    # which is beyond the scope of this sync sequence fix
-    cocotb.log.info("📝 Note: Multi-lane reception requires additional development")
 
     # Clean up any incomplete frame state
     await tb.rx_model.reset()

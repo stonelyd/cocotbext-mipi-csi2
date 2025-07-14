@@ -22,13 +22,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from .dphy import DPhyTx, DPhyRx, DPhyModel
+from .dphy import (
+    DPhyTxModel, DPhyRxModel
+)
 from .cphy import CPhyTx, CPhyRx, CPhyModel
 
 __all__ = [
-    "DPhyTx",
-    "DPhyRx", 
-    "DPhyModel",
+    # D-PHY classes
+    "DPhyTxModel",
+    "DPhyRxModel",
+    # C-PHY classes
     "CPhyTx",
     "CPhyRx",
     "CPhyModel"

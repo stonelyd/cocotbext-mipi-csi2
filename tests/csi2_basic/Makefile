@@ -11,5 +11,6 @@ export PYTHONPATH := $(shell pwd)/../..:$(PYTHONPATH)
 
 # Default simulator
 SIM ?= icarus
+WAVES ?= 1
 
 include $(shell cocotb-config --makefiles)/Makefile.sim

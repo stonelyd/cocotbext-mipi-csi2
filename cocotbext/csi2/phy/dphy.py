@@ -689,6 +689,10 @@ class DPhyRxModel:
         # RX state machine per lane
         self.lane_rx_state = {i: DPhyRxLaneState.LP_11 for i in range(config.lane_count)}
 
+        # Multi-lane processing state
+        self.processing_distributed_packet = False
+        self.distributed_packet_bytes = 0
+
         # Start monitoring tasks
         self._clock_monitor_task = cocotb.start_soon(self._monitor_clock_events())
 
@@ -740,7 +744,7 @@ class DPhyRxModel:
                 any_lane_sync_aligned = any(self.lane_sync_aligned[i] for i in range(len(self.data_lanes)))
                 if any_lane_sync_aligned:
                     new_state = DPhyRxLaneState.HS_DATA
-        elif old_state == DPhyRxLaneState.HS_DATA:
+        elif old_state == DPhyRxLaneState.HS_TRAIL:
             # In HS_DATA, we can transition back to LP_11 when HS mode ends
             if p_val == 1 and n_val == 1:
                 new_state = DPhyRxLaneState.LP_11
@@ -834,9 +838,15 @@ class DPhyRxModel:
             self.logger.debug(f"Lane {lane_idx}: Received byte 0x{byte_val:02x}")
 
             if self.config.lane_distribution_enabled and len(self.data_lanes) > 1:
-                # Multi-lane mode: handle distributed data
-                self.logger.info(f"Lane {lane_idx}: Calling _handle_distributed_data (multi-lane mode)")
-                await self._handle_distributed_data()
+                # Multi-lane mode: only handle distributed data when we have enough data
+                # to potentially reconstruct a complete packet
+                total_bytes_received = sum(len(self.lane_buffers[i]) for i in range(len(self.data_lanes)))
+
+                # Only attempt reconstruction if we have at least 4 bytes total (minimum packet size)
+                # and we haven't already processed this packet
+                if total_bytes_received >= 4 and not self.processing_distributed_packet:
+                    self.logger.info(f"Lane {lane_idx}: Calling _handle_distributed_data (multi-lane mode) with {total_bytes_received} total bytes")
+                    await self._handle_distributed_data()
             else:
                 # Single-lane mode: handle complete packets on this lane
                 await self._handle_single_lane_data(lane_idx, byte_val)
@@ -884,12 +894,18 @@ class DPhyRxModel:
             self.lane_packet_lengths[lane_idx] = 0
             self.lane_processing_packet[lane_idx] = False
             self.lane_sync_aligned[lane_idx] = False
-            self.logger.debug(f"Lane {lane_idx}: Stopped processing until next sync")
+            self.lane_rx_state[lane_idx] = DPhyRxLaneState.HS_TRAIL
+            self.logger.info(f"Lane {lane_idx}: Stopped processing until next sync")
 
     async def _handle_distributed_data(self):
         """Handle data reception for multi-lane distribution mode"""
         # For multi-lane mode, we need to reconstruct the original packet
         # from distributed data across all lanes
+
+        # Prevent multiple reconstructions of the same packet
+        if self.processing_distributed_packet:
+            self.logger.debug(f"Multi-lane: Already processing distributed packet, skipping")
+            return
 
         # Get all lanes that are processing packets
         active_lanes = [i for i in range(len(self.data_lanes)) if self.lane_processing_packet[i]]
@@ -919,17 +935,20 @@ class DPhyRxModel:
         for lane_idx in lanes_with_data:
             self.logger.debug(f"Multi-lane: Lane {lane_idx} has {len(self.lane_buffers[lane_idx])} bytes: {[f'0x{b:02x}' for b in self.lane_buffers[lane_idx]]}")
 
-        # Reconstruct the distributed data using the same algorithm as TX
-        # TX distributes bytes round-robin: byte 0->lane 0, byte 1->lane 1, etc.
-        reconstructed_data = []
-        max_bytes = max(len(self.lane_buffers[i]) for i in lanes_with_data)
+        # Use the proper lanes_to_bytes algorithm to reconstruct data
+        # This is the inverse of bytes_to_lanes used in TX
+        from ..utils import lanes_to_bytes
 
-        self.logger.debug(f"Multi-lane: Reconstructing with max_bytes={max_bytes}")
+        # Prepare lane data for reconstruction
+        lane_data = []
+        for i in range(len(self.data_lanes)):
+            if i in lanes_with_data:
+                lane_data.append(bytes(self.lane_buffers[i]))
+            else:
+                lane_data.append(b'')
 
-        for byte_idx in range(max_bytes):
-            for lane_idx in range(len(self.data_lanes)):
-                if lane_idx in lanes_with_data and byte_idx < len(self.lane_buffers[lane_idx]):
-                    reconstructed_data.append(self.lane_buffers[lane_idx][byte_idx])
+        # Reconstruct using the proper algorithm
+        reconstructed_data = lanes_to_bytes(lane_data)
 
         self.logger.debug(f"Multi-lane: Reconstructed {len(reconstructed_data)} bytes: {[f'0x{b:02x}' for b in reconstructed_data]}")
 
@@ -956,6 +975,10 @@ class DPhyRxModel:
             # Check if packet is complete
             self.logger.info(f"Multi-lane: Checking packet completion - reconstructed: {len(reconstructed_data)}, expected: {expected_length}")
             if expected_length > 0 and len(reconstructed_data) >= expected_length:
+                # Mark that we're processing this packet to prevent duplicates
+                self.processing_distributed_packet = True
+                self.distributed_packet_bytes = expected_length
+
                 packet_data = bytes(reconstructed_data[:expected_length])
                 self.logger.info(f"Multi-lane: Packet complete ({len(packet_data)} bytes)")
 
@@ -963,24 +986,46 @@ class DPhyRxModel:
                     self.logger.info(f"Multi-lane: Calling on_data_received callback with {len(packet_data)} bytes")
                     await cocotb.start(self.on_data_received(packet_data))
 
-                # Call packet end callback
+                # Always call on_packet_end callback after distributed packet
+                if self.on_packet_end:
+                    self.logger.info(f"Multi-lane: Calling on_packet_end callback after distributed packet")
+                    await cocotb.start(self.on_packet_end())
+
+                # Call packet end callback for lane 0 (for per-lane cleanup)
                 await self._handle_packet_end(0)  # Use lane 0 as representative
 
-                # Remove processed bytes from all lane buffers
-                # Calculate how many bytes each lane contributed
-                total_bytes = len(reconstructed_data)
-                bytes_per_lane = total_bytes // len(self.data_lanes)
-                extra_bytes = total_bytes % len(self.data_lanes)
+                # Remove only the bytes that were just used from each lane buffer
+                # This matches the round-robin distribution used in TX
+                used_per_lane = [0] * len(self.data_lanes)
+                for i in range(expected_length):
+                    lane_idx = i % len(self.data_lanes)
+                    used_per_lane[lane_idx] += 1
 
+                # Remove bytes from ALL lanes that were used in reconstruction
+                # (not just lanes that had data initially)
                 for lane_idx in range(len(self.data_lanes)):
-                    if lane_idx in lanes_with_data:
-                        # Each lane contributed bytes_per_lane + 1 if it was one of the first extra_bytes lanes
-                        bytes_to_remove = bytes_per_lane + (1 if lane_idx < extra_bytes else 0)
+                    if used_per_lane[lane_idx] > 0:
+                        # Ensure we don't remove more bytes than the lane actually has
+                        bytes_to_remove = min(used_per_lane[lane_idx], len(self.lane_buffers[lane_idx]))
                         if bytes_to_remove > 0:
                             self.lane_buffers[lane_idx] = self.lane_buffers[lane_idx][bytes_to_remove:]
                             self.logger.debug(f"Multi-lane: Removed {bytes_to_remove} bytes from lane {lane_idx}")
+                        else:
+                            self.logger.debug(f"Multi-lane: Lane {lane_idx} had no bytes to remove")
+
+                # CRITICAL FIX: After processing a distributed packet, stop processing on ALL lanes
+                # until the next sync sequence to prevent duplicate packet reconstructions
+                for lane_idx in range(len(self.data_lanes)):
+                    self.lane_processing_packet[lane_idx] = False
+                    self.lane_sync_aligned[lane_idx] = False
+                    # Also reset the lane RX state to LP_11 to stop bit processing
+                    self.lane_rx_state[lane_idx] = DPhyRxLaneState.HS_TRAIL
+                    self.logger.debug(f"Multi-lane: Stopped processing on lane {lane_idx} after distributed packet")
+
+                self.processing_distributed_packet = False
+                self.distributed_packet_bytes = 0
             else:
-                self.logger.warning(f"Multi-lane: Packet not complete - need {expected_length} bytes, have {len(reconstructed_data)}")
+                self.logger.debug(f"Multi-lane: Not enough data for a complete packet yet")
         else:
             self.logger.warning(f"Multi-lane: No reconstructed data available")
 
@@ -1024,6 +1069,8 @@ class DPhyRxModel:
         for lane_idx in range(self.config.lane_count):
             self.reset_lane_state(lane_idx)
         self.hs_active = False
+        self.processing_distributed_packet = False
+        self.distributed_packet_bytes = 0
 
     def enable_lane(self, lane_idx: int):
         """Enable monitoring for a specific lane."""

@@ -32,6 +32,7 @@ from ..config import Csi2Config, Csi2PhyConfig
 from ..bus import Csi2DPhyBus
 from ..exceptions import Csi2PhyError, Csi2TimingError
 from ..packet import Csi2PacketHeader, DataType
+from ..utils import bytes_to_lanes
 
 
 def _is_short_packet_type(data_type: int) -> bool:
@@ -305,7 +306,7 @@ class DPhyTxModel:
 
             # Use proper DDR timing (half the bit period) - same timing for all lanes
             # For DDR, each bit period is half the UI (Unit Interval)
-            timer_value = max(1, int(self.bit_period_ns / 2))
+            timer_value = self.bit_period_ns / 2
             await Timer(timer_value, units='ns')
 
         # Mark all lanes as HS active
@@ -368,6 +369,30 @@ class DPhyTxModel:
 
             # Use DDR timing (half the bit period)
             # Ensure minimum timer resolution of 1ns to avoid undefined behavior
+            timer_value = self.ddr_bit_period_ns
+            await Timer(timer_value, units='ns')
+
+    async def _send_hs_byte_all_lanes(self, byte_val: int):
+        """Send a single byte in HS mode at DDR rate"""
+
+        for lane_idx, (lane, lane_bytes) in enumerate(zip(self.data_lanes, lane_data)):
+            signals = self.lane_signals[lane.name]
+
+            # Send bits LSB first at DDR rate (half the bit period)
+            for bit_pos in range(8):
+                bit_val = (byte_val >> bit_pos) & 1
+
+                if bit_val:
+                    # HS-1: p=1, n=0
+                    signals['p'].value = 1
+                    signals['n'].value = 0
+                else:
+                    # HS-0: p=0, n=1
+                    signals['p'].value = 0
+                    signals['n'].value = 1
+
+                # Use DDR timing (half the bit period)
+                # Ensure minimum timer resolution of 1ns to avoid undefined behavior
             timer_value = self.ddr_bit_period_ns
             await Timer(timer_value, units='ns')
 
@@ -461,13 +486,17 @@ class DPhyTxModel:
 
         if self.config.lane_distribution_enabled and len(self.data_lanes) > 1:
             # Distribute data across lanes
-            from ..utils import bytes_to_lanes
+
             lane_data = bytes_to_lanes(data, len(self.data_lanes))
+            self.logger.info(f"TX PHY: lane_data: {[[f'0x{byte:02x}' for byte in lane] for lane in lane_data]} " f"len(self.data_lanes): {len(self.data_lanes)}")
+
 
             # Send data on all lanes simultaneously (parallel transmission)
             self.logger.info(f"TX PHY: Sending distributed data across {len(self.data_lanes)} lanes")
             for i, (lane, lane_bytes) in enumerate(zip(self.data_lanes, lane_data)):
                 self.logger.info(f"TX PHY: Lane {i} will send {len(lane_bytes)} bytes: {[f'0x{b:02x}' for b in lane_bytes]}")
+
+            # exit(0)
 
             # Send data byte-by-byte across all lanes simultaneously
             max_bytes = max(len(lane_bytes) for lane_bytes in lane_data)
@@ -480,9 +509,16 @@ class DPhyTxModel:
                     else:
                         # Pad with zeros if this lane has fewer bytes
                         await self._send_hs_byte(lane, 0)
+                # exit(0)
 
             self.logger.info("TX PHY: All lanes data transmission complete")
         else:
+            self.logger.info(f"bytes: {[f'0x{b:02x}' for b in data]}")
+            lane_data = bytes_to_lanes(data, len(self.data_lanes))
+            self.logger.info(f"TX PHY: lane_data: {[[f'0x{byte:02x}' for byte in lane] for lane in lane_data]} " f"len(self.data_lanes): {len(self.data_lanes)}")
+
+            # exit(0)
+
             # Send all data on the first lane (no distribution)
             self.logger.info(f"TX PHY: Sending {len(data)} bytes to {self.data_lanes[0].name}")
             await self._send_hs_data_on_lane(self.data_lanes[0], data)
@@ -528,6 +564,7 @@ class DPhyTxModel:
         # Step 4: Send sync sequence on all lanes (this still needs async for bit-level timing)
         # This step is now coordinated by _send_sync_sequence_all_lanes
         await self._send_sync_sequence_all_lanes()
+
 
     async def stop_packet_transmission(self):
         """Stop packet transmission (HS exit on all lanes) with parallel timing"""

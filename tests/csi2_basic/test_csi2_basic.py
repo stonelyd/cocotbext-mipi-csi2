@@ -434,3 +434,78 @@ async def test_4lane_line_end_transmission(dut):
 
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
+
+@cocotb.test()
+async def test_1lane_raw8_long_packet_transmission(dut):
+    """Test CSI-2 Raw8 Long packet transmission and reception with word count = 32"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+    await tb.configure_csi2()
+
+    # Reset RX model to ensure clean state
+    await tb.rx_model.reset()
+
+    # Disable frame assembly to avoid pixel data without active line errors
+    # since we're only testing packet transmission/reception, not frame assembly
+    tb.rx_model.enable_frame_assembly(False)
+    cocotb.log.info("Frame assembly disabled for this test")
+
+    # Create Raw8 Long packet with word count = 32 (32 bytes payload)
+    payload_data = bytes([i % 256 for i in range(32)])  # 32 bytes of test data
+    raw8_packet = Csi2LongPacket(virtual_channel=0, data_type=DataType.RAW8, payload=payload_data)
+    packet_bytes = raw8_packet.to_bytes()
+
+    cocotb.log.info(f"Testing Raw8 Long packet transmission: {len(packet_bytes)} bytes")
+    cocotb.log.info(f"Packet header bytes: {[f'{b:02x}' for b in packet_bytes[:4]]}")
+    cocotb.log.info(f"Payload bytes: {[f'{b:02x}' for b in packet_bytes[4:36]]}")
+    cocotb.log.info(f"Checksum bytes: {[f'{b:02x}' for b in packet_bytes[36:]]}")
+
+    # Send directly via TX PHY with timeout
+    try:
+        cocotb.log.info("Attempting to start Raw8 Long packet transmission")
+        await with_timeout(tb.tx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("Raw8 Long packet transmission started")
+        cocotb.log.info("Attempting to send Raw8 Long packet data")
+        await with_timeout(tb.tx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
+        cocotb.log.info("Raw8 Long packet data sent")
+        cocotb.log.info("Attempting to stop Raw8 Long packet transmission")
+        await with_timeout(tb.tx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
+        cocotb.log.info("Raw8 Long packet transmission completed")
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.error("Timeout in Raw8 Long packet transmission")
+        raise
+
+    # Wait a bit for reception
+    await Timer(1000, units="ns")
+
+    # Debug: check statistics
+    rx_stats = tb.rx_model.get_statistics()
+    cocotb.log.info(f"RX stats: {rx_stats}")
+
+    # Wait for RX model to receive the packet
+    try:
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=10000)
+
+        assert received_packet is not None, "No packet received"
+        assert isinstance(received_packet, Csi2LongPacket), "Expected long packet"
+        assert received_packet.header.validate_ecc(), "Received packet ECC validation failed"
+        assert received_packet.data_type == DataType.RAW8.value, "Expected Raw8 packet"
+        assert received_packet.virtual_channel == 0, "Expected VC=0"
+        assert received_packet.header.word_count == 32, "Expected word count = 32"
+        assert len(received_packet.payload) == 32, "Expected payload length = 32 bytes"
+        assert received_packet.validate_checksum(), "Received packet checksum validation failed"
+        assert received_packet.payload == payload_data, "Payload data mismatch"
+
+        cocotb.log.info(f"Received Raw8 Long packet: VC={received_packet.virtual_channel}, "
+                        f"DT=0x{received_packet.data_type:02x}, WC={received_packet.header.word_count}, "
+                        f"Payload={len(received_packet.payload)} bytes")
+
+    except cocotb.result.SimTimeoutError:
+        cocotb.log.warning("Timeout waiting for Raw8 Long packet reception")
+        raise
+
+    cocotb.log.info("Raw8 Long packet transmission test passed")
+
+    # Clean up any incomplete frame state
+    await tb.rx_model.reset()

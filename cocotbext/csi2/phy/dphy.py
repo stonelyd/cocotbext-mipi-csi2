@@ -372,15 +372,26 @@ class DPhyTxModel:
             timer_value = self.ddr_bit_period_ns
             await Timer(timer_value, units='ns')
 
-    async def _send_hs_byte_all_lanes(self, byte_val: int):
-        """Send a single byte in HS mode at DDR rate"""
+    async def _send_hs_byte_all_lanes(self, lane_data: List[bytes], byte_idx: int):
+        """
+        Send a single byte (per lane) in HS mode at DDR rate for all data lanes in parallel.
 
-        for lane_idx, (lane, lane_bytes) in enumerate(zip(self.data_lanes, lane_data)):
-            signals = self.lane_signals[lane.name]
+        Args:
+            lane_data: List of bytes objects, one per lane, containing the data for each lane.
+            byte_idx: Index of the byte to send for each lane.
+        """
+        # For each bit position (LSB first)
+        for bit_pos in range(8):
+            # For each lane, set the signals for this bit
+            for lane_idx, lane in enumerate(self.data_lanes):
+                # Get the byte for this lane, or 0 if this lane has fewer bytes
+                if lane_idx < len(lane_data) and byte_idx < len(lane_data[lane_idx]):
+                    byte_val = lane_data[lane_idx][byte_idx]
+                else:
+                    byte_val = 0
 
-            # Send bits LSB first at DDR rate (half the bit period)
-            for bit_pos in range(8):
                 bit_val = (byte_val >> bit_pos) & 1
+                signals = self.lane_signals[lane.name]
 
                 if bit_val:
                     # HS-1: p=1, n=0
@@ -391,8 +402,8 @@ class DPhyTxModel:
                     signals['p'].value = 0
                     signals['n'].value = 1
 
-                # Use DDR timing (half the bit period)
-                # Ensure minimum timer resolution of 1ns to avoid undefined behavior
+            # Use DDR timing (half the bit period)
+            # Ensure minimum timer resolution of 1ns to avoid undefined behavior
             timer_value = self.ddr_bit_period_ns
             await Timer(timer_value, units='ns')
 
@@ -502,13 +513,16 @@ class DPhyTxModel:
             max_bytes = max(len(lane_bytes) for lane_bytes in lane_data)
             for byte_idx in range(max_bytes):
                 # Send one byte on each lane simultaneously
-                for lane_idx, (lane, lane_bytes) in enumerate(zip(self.data_lanes, lane_data)):
-                    if byte_idx < len(lane_bytes):
-                        byte_val = lane_bytes[byte_idx]
-                        await self._send_hs_byte(lane, byte_val)
-                    else:
-                        # Pad with zeros if this lane has fewer bytes
-                        await self._send_hs_byte(lane, 0)
+
+                await self._send_hs_byte_all_lanes(lane_data, byte_idx)
+
+                # for lane_idx, (lane, lane_bytes) in enumerate(zip(self.data_lanes, lane_data)):
+                #     if byte_idx < len(lane_bytes):
+                #         byte_val = lane_bytes[byte_idx]
+                #         await self._send_hs_byte(lane, byte_val)
+                #     else:
+                #         # Pad with zeros if this lane has fewer bytes
+                #         await self._send_hs_byte(lane, 0)
                 # exit(0)
 
             self.logger.info("TX PHY: All lanes data transmission complete")

@@ -592,3 +592,235 @@ async def test_4lane_raw8_long_packet_transmission(dut):
 
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
+
+@cocotb.test()
+async def test_1lane_frame_transmission(dut):
+    """Test complete frame transmission using event-driven RX (no timer-based polling)"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+    await tb.configure_csi2(lane_count=1, bit_rate_mbps=800)
+
+    # Reset RX model to ensure clean state
+    await tb.rx_model.reset()
+
+    # Frame parameters
+    width, height = 160, 120
+    data_type = DataType.RAW8
+    virtual_channel = 0
+    frame_number = 0
+
+    # Log start
+    cocotb.log.info(f"Starting frame transmission test: {width}x{height}, RAW8, VC={virtual_channel}")
+
+    # Start frame transmission
+    await tb.tx_model.send_frame(width, height, data_type, virtual_channel, frame_number)
+    cocotb.log.info("Frame sent from TX model")
+
+    # Wait for RX model to signal frame completion (event-driven, no timer)
+    cocotb.log.info("Waiting for RX model to complete frame reception (event-driven)")
+    await tb.rx_model.frame_complete_event.wait()
+    tb.rx_model.frame_complete_event.clear()
+    cocotb.log.info("RX model signaled frame completion")
+
+    # Validate received frame data
+    frame_data = tb.rx_model.get_frame_data(virtual_channel)
+    assert frame_data is not None, "No frame data received"
+    assert len(frame_data) == width * height, f"Frame data length mismatch: expected {width*height}, got {len(frame_data)}"
+
+    # Debug: Log frame data statistics
+    cocotb.log.info(f"Frame data statistics:")
+    cocotb.log.info(f"  Total bytes: {len(frame_data)}")
+    cocotb.log.info(f"  Expected bytes: {width * height}")
+    cocotb.log.info(f"  Min value: {min(frame_data)}")
+    cocotb.log.info(f"  Max value: {max(frame_data)}")
+    cocotb.log.info(f"  Average value: {sum(frame_data) / len(frame_data):.2f}")
+
+    # Generate expected ramp pattern (same as TX model uses)
+    expected_pattern = bytearray()
+    for y in range(height):
+        for x in range(width):
+            # Horizontal ramp: value = (x * 255) // width
+            value = (x * 255) // width
+            expected_pattern.append(value)
+
+    # Debug: Log expected pattern statistics
+    cocotb.log.info(f"Expected pattern statistics:")
+    cocotb.log.info(f"  Total bytes: {len(expected_pattern)}")
+    cocotb.log.info(f"  Min value: {min(expected_pattern)}")
+    cocotb.log.info(f"  Max value: {max(expected_pattern)}")
+    cocotb.log.info(f"  Average value: {sum(expected_pattern) / len(expected_pattern):.2f}")
+
+    # Debug: Show first few bytes of both patterns
+    cocotb.log.info(f"First 20 bytes of received frame: {[f'{b:02x}' for b in frame_data[:20]]}")
+    cocotb.log.info(f"First 20 bytes of expected pattern: {[f'{b:02x}' for b in expected_pattern[:20]]}")
+
+    # Debug: Show last few bytes of both patterns
+    cocotb.log.info(f"Last 20 bytes of received frame: {[f'{b:02x}' for b in frame_data[-20:]]}")
+    cocotb.log.info(f"Last 20 bytes of expected pattern: {[f'{b:02x}' for b in expected_pattern[-20:]]}")
+
+    # Find first mismatch if any
+    if frame_data != expected_pattern:
+        for i, (actual, expected) in enumerate(zip(frame_data, expected_pattern)):
+            if actual != expected:
+                cocotb.log.error(f"First mismatch at byte {i}: received 0x{actual:02x}, expected 0x{expected:02x}")
+                cocotb.log.error(f"  Position: x={i % width}, y={i // width}")
+                break
+
+        # Show more context around the first mismatch
+        if len(frame_data) > 0:
+            mismatch_pos = 0
+            for i, (actual, expected) in enumerate(zip(frame_data, expected_pattern)):
+                if actual != expected:
+                    mismatch_pos = i
+                    break
+
+            start_pos = max(0, mismatch_pos - 10)
+            end_pos = min(len(frame_data), mismatch_pos + 10)
+
+            cocotb.log.error(f"Context around first mismatch (position {mismatch_pos}):")
+            cocotb.log.error(f"  Received: {[f'{b:02x}' for b in frame_data[start_pos:end_pos]]}")
+            cocotb.log.error(f"  Expected: {[f'{b:02x}' for b in expected_pattern[start_pos:end_pos]]}")
+
+            # Show line-by-line comparison for first few lines
+            cocotb.log.error("Line-by-line comparison (first 3 lines):")
+            for line in range(min(3, height)):
+                line_start = line * width
+                line_end = line_start + width
+                received_line = frame_data[line_start:line_end]
+                expected_line = expected_pattern[line_start:line_end]
+                cocotb.log.error(f"  Line {line}: received {[f'{b:02x}' for b in received_line[:10]]}...")
+                cocotb.log.error(f"  Line {line}: expected {[f'{b:02x}' for b in expected_line[:10]]}...")
+
+    # Assert pattern match with detailed error message
+    assert frame_data == expected_pattern, (
+        f"Frame data does not match expected ramp pattern!\n"
+        f"Frame size: {len(frame_data)} bytes, Expected: {len(expected_pattern)} bytes\n"
+        f"Frame range: {min(frame_data)}-{max(frame_data)}, Expected range: {min(expected_pattern)}-{max(expected_pattern)}"
+    )
+
+    cocotb.log.info("Frame data matches expected ramp pattern")
+    cocotb.log.info(f"Frame transmission test passed: received {len(frame_data)} bytes")
+
+    # Clean up any incomplete frame state
+    await tb.rx_model.reset()
+
+@cocotb.test()
+async def test_4lane_frame_transmission(dut):
+    """Test complete 4-lane frame transmission using event-driven RX (no timer-based polling)"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+
+    # Configure with 4-lane distribution enabled
+    await tb.configure_csi2(lane_count=4, bit_rate_mbps=1000)
+
+    # Override configuration to enable lane distribution
+    tb.config.lane_distribution_enabled = True
+    tb.tx_phy_model.config.lane_distribution_enabled = True
+    tb.rx_phy_model.config.lane_distribution_enabled = True
+    cocotb.log.info("4-lane distribution enabled for this test")
+
+    # Reset RX model to ensure clean state
+    await tb.rx_model.reset()
+
+    # Frame parameters
+    width, height = 160, 120
+    data_type = DataType.RAW8
+    virtual_channel = 0
+    frame_number = 0
+
+    # Log start
+    cocotb.log.info(f"Starting 4-lane frame transmission test: {width}x{height}, RAW8, VC={virtual_channel}")
+
+    # Start frame transmission
+    await tb.tx_model.send_frame(width, height, data_type, virtual_channel, frame_number)
+    cocotb.log.info("4-lane frame sent from TX model")
+
+    # Wait for RX model to signal frame completion (event-driven, no timer)
+    cocotb.log.info("Waiting for RX model to complete 4-lane frame reception (event-driven)")
+    await tb.rx_model.frame_complete_event.wait()
+    tb.rx_model.frame_complete_event.clear()
+    cocotb.log.info("RX model signaled 4-lane frame completion")
+
+    # Validate received frame data
+    frame_data = tb.rx_model.get_frame_data(virtual_channel)
+    assert frame_data is not None, "No frame data received"
+    assert len(frame_data) == width * height, f"Frame data length mismatch: expected {width*height}, got {len(frame_data)}"
+
+    # Debug: Log frame data statistics
+    cocotb.log.info(f"4-lane frame data statistics:")
+    cocotb.log.info(f"  Total bytes: {len(frame_data)}")
+    cocotb.log.info(f"  Expected bytes: {width * height}")
+    cocotb.log.info(f"  Min value: {min(frame_data)}")
+    cocotb.log.info(f"  Max value: {max(frame_data)}")
+    cocotb.log.info(f"  Average value: {sum(frame_data) / len(frame_data):.2f}")
+
+    # Generate expected ramp pattern (same as TX model uses)
+    expected_pattern = bytearray()
+    for y in range(height):
+        for x in range(width):
+            # Horizontal ramp: value = (x * 255) // width
+            value = (x * 255) // width
+            expected_pattern.append(value)
+
+    # Debug: Log expected pattern statistics
+    cocotb.log.info(f"Expected pattern statistics:")
+    cocotb.log.info(f"  Total bytes: {len(expected_pattern)}")
+    cocotb.log.info(f"  Min value: {min(expected_pattern)}")
+    cocotb.log.info(f"  Max value: {max(expected_pattern)}")
+    cocotb.log.info(f"  Average value: {sum(expected_pattern) / len(expected_pattern):.2f}")
+
+    # Debug: Show first few bytes of both patterns
+    cocotb.log.info(f"First 20 bytes of received 4-lane frame: {[f'{b:02x}' for b in frame_data[:20]]}")
+    cocotb.log.info(f"First 20 bytes of expected pattern: {[f'{b:02x}' for b in expected_pattern[:20]]}")
+
+    # Debug: Show last few bytes of both patterns
+    cocotb.log.info(f"Last 20 bytes of received 4-lane frame: {[f'{b:02x}' for b in frame_data[-20:]]}")
+    cocotb.log.info(f"Last 20 bytes of expected pattern: {[f'{b:02x}' for b in expected_pattern[-20:]]}")
+
+    # Find first mismatch if any
+    if frame_data != expected_pattern:
+        for i, (actual, expected) in enumerate(zip(frame_data, expected_pattern)):
+            if actual != expected:
+                cocotb.log.error(f"First mismatch at byte {i}: received 0x{actual:02x}, expected 0x{expected:02x}")
+                cocotb.log.error(f"  Position: x={i % width}, y={i // width}")
+                break
+
+        # Show more context around the first mismatch
+        if len(frame_data) > 0:
+            mismatch_pos = 0
+            for i, (actual, expected) in enumerate(zip(frame_data, expected_pattern)):
+                if actual != expected:
+                    mismatch_pos = i
+                    break
+
+            start_pos = max(0, mismatch_pos - 10)
+            end_pos = min(len(frame_data), mismatch_pos + 10)
+
+            cocotb.log.error(f"Context around first mismatch (position {mismatch_pos}):")
+            cocotb.log.error(f"  Received: {[f'{b:02x}' for b in frame_data[start_pos:end_pos]]}")
+            cocotb.log.error(f"  Expected: {[f'{b:02x}' for b in expected_pattern[start_pos:end_pos]]}")
+
+            # Show line-by-line comparison for first few lines
+            cocotb.log.error("Line-by-line comparison (first 3 lines):")
+            for line in range(min(3, height)):
+                line_start = line * width
+                line_end = line_start + width
+                received_line = frame_data[line_start:line_end]
+                expected_line = expected_pattern[line_start:line_end]
+                cocotb.log.error(f"  Line {line}: received {[f'{b:02x}' for b in received_line[:10]]}...")
+                cocotb.log.error(f"  Line {line}: expected {[f'{b:02x}' for b in expected_line[:10]]}...")
+
+    # Assert pattern match with detailed error message
+    assert frame_data == expected_pattern, (
+        f"4-lane frame data does not match expected ramp pattern!\n"
+        f"Frame size: {len(frame_data)} bytes, Expected: {len(expected_pattern)} bytes\n"
+        f"Frame range: {min(frame_data)}-{max(frame_data)}, Expected range: {min(expected_pattern)}-{max(expected_pattern)}"
+    )
+
+    cocotb.log.info("4-lane frame data matches expected ramp pattern")
+    cocotb.log.info(f"4-lane frame transmission test passed: received {len(frame_data)} bytes")
+
+    # Clean up any incomplete frame state
+    await tb.rx_model.reset()

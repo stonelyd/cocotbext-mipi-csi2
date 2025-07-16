@@ -10,6 +10,9 @@ from cocotb.clock import Clock
 import pytest
 import asyncio
 import random
+import os
+
+from cocotb.regression import TestFactory
 
 from cocotbext.csi2 import (
     Csi2TxModel, Csi2RxModel, Csi2Config, PhyType, DataType,
@@ -151,15 +154,17 @@ async def test_1lane_frame_start_packet_transmission(dut):
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
 
-@cocotb.test()
-async def test_4lane_frame_start_packet_transmission(dut):
+# @cocotb.test()
+async def run_frame_start_packet_transmission(dut, lane_count=4):
     """Test CSI-2 packet transmission and reception with 4-lane distribution enabled"""
+    # Extract integer value if lane_count is a tuple (for TestFactory descriptive names)
+
     setup_logging()
     tb = TB(dut)
     await tb.setup()
 
     # Configure with 4-lane distribution enabled
-    await tb.configure_csi2(lane_count=4, bit_rate_mbps=1000)
+    await tb.configure_csi2(lane_count=lane_count, bit_rate_mbps=1000)
 
     # Override configuration to enable lane distribution
     tb.config.lane_distribution_enabled = True
@@ -593,7 +598,7 @@ async def test_4lane_raw8_long_packet_transmission(dut):
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
 
-@cocotb.test()
+# @cocotb.test()
 async def test_1lane_frame_transmission(dut):
     """Test complete frame transmission using event-driven RX (no timer-based polling)"""
     setup_logging()
@@ -705,7 +710,7 @@ async def test_1lane_frame_transmission(dut):
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
 
-@cocotb.test()
+# @cocotb.test()
 async def test_4lane_frame_transmission(dut):
     """Test complete 4-lane frame transmission using event-driven RX (no timer-based polling)"""
     setup_logging()
@@ -1192,15 +1197,16 @@ async def test_2lane_raw8_long_packet_transmission(dut):
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
 
-@cocotb.test()
-async def test_2lane_frame_transmission(dut):
+# @cocotb.test()
+async def run_frame_transmission(dut, lane_count=4):
     """Test complete 2-lane frame transmission using event-driven RX (no timer-based polling)"""
+
     setup_logging()
     tb = TB(dut)
     await tb.setup()
 
     # Configure with 2-lane distribution enabled
-    await tb.configure_csi2(lane_count=2, bit_rate_mbps=1000)
+    await tb.configure_csi2(lane_count=lane_count, bit_rate_mbps=1000)
 
     # Override configuration to enable lane distribution
     tb.config.lane_distribution_enabled = True
@@ -1311,3 +1317,39 @@ async def test_2lane_frame_transmission(dut):
 
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
+
+
+if cocotb.SIM_NAME:
+
+    # for test in [
+    #             test_frame_start_packet_transmission,
+    #         ]:
+
+    #     factory = TestFactory(test)
+    #     factory.generate_tests()
+
+    factory = TestFactory(run_frame_start_packet_transmission)
+    factory.add_option("lane_count", [1,2,4])
+    factory.generate_tests()
+
+    # factory = TestFactory(run_frame_transmission)
+    # factory.add_option("lane_count", [1,2,4])
+    # factory.generate_tests()
+
+    # factory = TestFactory(run_test_p2p_dma)
+    # factory.add_option("ep1_index", [0, 1])
+    # factory.add_option("ep2_index", [2, 3])
+    # factory.generate_tests()
+
+    # factory = TestFactory(run_test_dma)
+    # factory.add_option("ep_index", range(4))
+    # factory.generate_tests()
+
+    # factory = TestFactory(run_test_msi)
+    # factory.add_option("ep_index", range(4))
+    # factory.generate_tests()
+
+
+# cocotb-test
+
+tests_dir = os.path.dirname(__file__)

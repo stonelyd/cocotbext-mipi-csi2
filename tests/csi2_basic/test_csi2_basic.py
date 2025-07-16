@@ -170,8 +170,8 @@ async def run_short_packet_transmission(dut, lane_count=4, packet_type="frame_st
     await tb.rx_model.reset()
 
 # Consolidated long packet test
-async def run_long_packet_transmission(dut, lane_count=4, **kwargs):
-    """Test CSI-2 Raw8 Long packet transmission and reception with lane distribution enabled"""
+async def run_long_packet_transmission(dut, lane_count=4, data_format="raw8", **kwargs):
+    """Test CSI-2 Long packet transmission and reception with lane distribution enabled"""
     setup_logging()
     tb = TB(dut)
     await tb.setup()
@@ -184,28 +184,47 @@ async def run_long_packet_transmission(dut, lane_count=4, **kwargs):
     tb.rx_model.enable_frame_assembly(False)
     cocotb.log.info("Frame assembly disabled for this test")
 
-    # Create Raw8 Long packet with word count = 32 (32 bytes payload)
-    payload_data = bytes([i % 256 for i in range(32)])
-    raw8_packet = Csi2LongPacket(virtual_channel=0, data_type=DataType.RAW8, payload=payload_data)
-    packet_bytes = raw8_packet.to_bytes()
+    # Create payload based on data format
+    if data_format == "raw8":
+        # Create Raw8 Long packet with word count = 32 (32 bytes payload)
+        payload_data = bytes([i % 256 for i in range(32)])
+        data_type = DataType.RAW8
+        expected_word_count = 32
+        expected_payload_length = 32
+        format_name = "Raw8"
+    elif data_format == "raw10":
+        # Create Raw10 Long packet with 16 pixels (20 bytes payload)
+        pixel_count = 16
+        pixels = [(i * 1023) // (pixel_count - 1) for i in range(pixel_count)]  # 10-bit ramp
+        from cocotbext.csi2.utils import pack_raw10
+        payload_data = pack_raw10(pixels)
+        data_type = DataType.RAW10
+        expected_word_count = 20
+        expected_payload_length = 20
+        format_name = "Raw10"
+    else:
+        raise ValueError(f"Unsupported data format: {data_format}")
 
-    cocotb.log.info(f"Testing {lane_count}-lane Raw8 Long packet transmission: {len(packet_bytes)} bytes")
+    packet = Csi2LongPacket(virtual_channel=0, data_type=data_type, payload=payload_data)
+    packet_bytes = packet.to_bytes()
+
+    cocotb.log.info(f"Testing {lane_count}-lane {format_name} Long packet transmission: {len(packet_bytes)} bytes")
     cocotb.log.info(f"Packet header bytes: {[f'{b:02x}' for b in packet_bytes[:4]]}")
-    cocotb.log.info(f"Payload bytes: {[f'{b:02x}' for b in packet_bytes[4:36]]}")
-    cocotb.log.info(f"Checksum bytes: {[f'{b:02x}' for b in packet_bytes[36:]]}")
+    cocotb.log.info(f"Payload bytes: {[f'{b:02x}' for b in packet_bytes[4:4+expected_payload_length]]}")
+    cocotb.log.info(f"Checksum bytes: {[f'{b:02x}' for b in packet_bytes[4+expected_payload_length:]]}")
 
     try:
-        cocotb.log.info(f"Attempting to start {lane_count}-lane Raw8 Long packet transmission")
+        cocotb.log.info(f"Attempting to start {lane_count}-lane {format_name} Long packet transmission")
         await with_timeout(tb.tx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
-        cocotb.log.info(f"{lane_count}-lane Raw8 Long packet transmission started")
-        cocotb.log.info(f"Attempting to send Raw8 Long packet data across {lane_count} lanes")
+        cocotb.log.info(f"{lane_count}-lane {format_name} Long packet transmission started")
+        cocotb.log.info(f"Attempting to send {format_name} Long packet data across {lane_count} lanes")
         await with_timeout(tb.tx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
-        cocotb.log.info(f"{lane_count}-lane Raw8 Long packet data sent")
-        cocotb.log.info(f"Attempting to stop {lane_count}-lane Raw8 Long packet transmission")
+        cocotb.log.info(f"{lane_count}-lane {format_name} Long packet data sent")
+        cocotb.log.info(f"Attempting to stop {lane_count}-lane {format_name} Long packet transmission")
         await with_timeout(tb.tx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
-        cocotb.log.info(f"{lane_count}-lane Raw8 Long packet transmission completed")
+        cocotb.log.info(f"{lane_count}-lane {format_name} Long packet transmission completed")
     except cocotb.result.SimTimeoutError:
-        cocotb.log.error(f"Timeout in {lane_count}-lane Raw8 Long packet transmission")
+        cocotb.log.error(f"Timeout in {lane_count}-lane {format_name} Long packet transmission")
         raise
 
     await Timer(1000, units="ns")
@@ -217,19 +236,19 @@ async def run_long_packet_transmission(dut, lane_count=4, **kwargs):
         assert received_packet is not None, "No packet received"
         assert isinstance(received_packet, Csi2LongPacket), "Expected long packet"
         assert received_packet.header.validate_ecc(), "Received packet ECC validation failed"
-        assert received_packet.data_type == DataType.RAW8.value, "Expected Raw8 packet"
+        assert received_packet.data_type == data_type.value, f"Expected {format_name} packet"
         assert received_packet.virtual_channel == 0, "Expected VC=0"
-        assert received_packet.header.word_count == 32, "Expected word count = 32"
-        assert len(received_packet.payload) == 32, "Expected payload length = 32 bytes"
+        assert received_packet.header.word_count == expected_word_count, f"Expected word count = {expected_word_count}"
+        assert len(received_packet.payload) == expected_payload_length, f"Expected payload length = {expected_payload_length} bytes"
         assert received_packet.validate_checksum(), "Received packet checksum validation failed"
         assert received_packet.payload == payload_data, "Payload data mismatch"
-        cocotb.log.info(f"Received {lane_count}-lane Raw8 Long packet: VC={received_packet.virtual_channel}, "
+        cocotb.log.info(f"Received {lane_count}-lane {format_name} Long packet: VC={received_packet.virtual_channel}, "
                         f"DT=0x{received_packet.data_type:02x}, WC={received_packet.header.word_count}, "
                         f"Payload={len(received_packet.payload)} bytes")
     except cocotb.result.SimTimeoutError:
-        cocotb.log.warning(f"Timeout waiting for {lane_count}-lane Raw8 Long packet reception")
+        cocotb.log.warning(f"Timeout waiting for {lane_count}-lane {format_name} Long packet reception")
         raise
-    cocotb.log.info(f"{lane_count}-lane Raw8 Long packet transmission test passed")
+    cocotb.log.info(f"{lane_count}-lane {format_name} Long packet transmission test passed")
     await tb.rx_model.reset()
 
 async def run_frame_transmission(dut, lane_count=4):
@@ -364,6 +383,7 @@ if cocotb.SIM_NAME:
     # Add long packet factory
     factory_long = TestFactory(run_long_packet_transmission)
     factory_long.add_option("lane_count", [1, 2, 4])
+    factory_long.add_option("data_format", ["raw8", "raw10"])
     factory_long.generate_tests()
 
     # Add frame transmission factory

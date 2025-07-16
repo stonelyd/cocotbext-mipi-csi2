@@ -352,19 +352,9 @@ async def run_frame_transmission(dut, lane_count=4):
     # Clean up any incomplete frame state
     await tb.rx_model.reset()
 
-# class NamedTestFactory(TestFactory):
-#     def _name_func(self, options):
-#         # options is a dict like {'lane_count': 2, 'packet_type': 'frame_end'}
-#         return f"shortpkt_{options['lane_count']}lane_{options['packet_type']}"
 
 if cocotb.SIM_NAME:
 
-    # for test in [
-    #             test_frame_start_packet_transmission,
-    #         ]:
-
-    #     factory = TestFactory(test)
-    #     factory.generate_tests()
 
     factory = TestFactory(run_short_packet_transmission)
     factory.add_option("lane_count", [1, 2, 4])

@@ -7,7 +7,7 @@ name = "cocotbext-mipi-csi2"
 dynamic = ["version"]
 description = "MIPI CSI-2 simulation framework for cocotb"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = { text = "MIT" }
 authors = [
   { name = "David stonelyd", email = "stonelyd@yahoo.com" }
 ]
@@ -17,7 +17,7 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Framework :: cocotb",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
+
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.6",

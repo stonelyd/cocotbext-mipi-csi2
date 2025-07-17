@@ -7,7 +7,7 @@ name = "cocotbext-mipi-csi2"
 dynamic = ["version"]
 description = "MIPI CSI-2 simulation framework for cocotb"
 readme = "README.md"
-license = "MIT"
+license = { text = "MIT" }
 authors = [
   { name = "David stonelyd", email = "stonelyd@yahoo.com" }
 ]

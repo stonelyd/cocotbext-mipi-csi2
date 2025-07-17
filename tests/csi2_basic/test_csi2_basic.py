@@ -11,6 +11,10 @@ import pytest
 import asyncio
 import random
 import os
+from cocotb_test import simulator
+
+from pathlib import Path
+
 
 from cocotb.regression import TestFactory
 
@@ -392,8 +396,32 @@ if cocotb.SIM_NAME:
     factory_frame.generate_tests()
 
 
-# cocotb-test
+
+
+
+
+# cocotb-test integration
 
 tests_dir = os.path.dirname(__file__)
 
 
+def test_csi2_basic(request):
+    """Test function for cocotb-test integration"""
+    dut = "test_csi2_basic"
+    module = os.path.splitext(os.path.basename(__file__))[0]
+    toplevel = dut
+
+    verilog_sources = [
+        os.path.join(os.path.dirname(__file__), f"{dut}.v"),
+    ]
+
+    sim_build = os.path.join(tests_dir, "sim_build",
+        request.node.name.replace('[', '-').replace(']', ''))
+
+    simulator.run(
+        python_search=[tests_dir],
+        verilog_sources=verilog_sources,
+        toplevel=toplevel,
+        module=module,
+        sim_build=sim_build,
+    )

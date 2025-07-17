@@ -1,10 +1,14 @@
 # MIPI CSI-2 simulation framework for Cocotb
 
-[![Tests](https://github.com/user/cocotbext-csi2/actions/workflows/tests.yml/badge.svg)](https://github.com/user/cocotbext-csi2/actions/workflows/tests.yml)
-[![codecov](https://codecov.io/gh/user/cocotbext-csi2/branch/main/graph/badge.svg)](https://codecov.io/gh/user/cocotbext-csi2)
-[![PyPI version](https://badge.fury.io/py/cocotbext-csi2.svg)](https://pypi.org/project/cocotbext-csi2)
+[![Regression Tests](https://github.com/stonelyd/cocotbext-mipi-csi2/actions/workflows/regression-tests.yml/badge.svg)](https://github.com/stonelyd/cocotbext-mipi-csi2/actions/workflows/regression-tests.yml)
+[![codecov](https://codecov.io/gh/stonelyd/cocotbext-mipi-csi2/branch/master/graph/badge.svg)](https://codecov.io/gh/stonelyd/cocotbext-mipi-csi2)
+[![PyPI version](https://badge.fury.io/py/cocotbext-mipi-csi2.svg)](https://pypi.org/project/cocotbext-mipi-csi2)
+[![Downloads](https://pepy.tech/badge/cocotbext-mipi-csi2)](https://pepy.tech/project/cocotbext-mipi-csi2)
 
-GitHub repository: https://github.com/user/cocotbext-csi2
+GitHub repository: https://github.com/stonelyd/cocotbext-mipi-csi2
+
+
+Note: This project is in active developmnet, many of the features listed below have not be implamented or tested.
 
 ## Introduction
 
@@ -16,14 +20,14 @@ This package provides comprehensive simulation models for MIPI CSI-2 protocol, s
 
 ### Protocol Support
 - **CSI-2 v4.0.1 compliant** implementation
-- **D-PHY** physical layer support (1, 2, 4, 8 lanes)
+- **D-PHY** physical layer support (1, 2, 4 lanes)
 - **C-PHY** physical layer support (1, 2, 3 trios)
 - **Virtual Channel** support (0-15)
 - **Multiple data types**: RAW8/10/12/16, RGB888/565, YUV422/420
 
 ### Packet Handling
 - **Short packets**: Frame/Line Start/End, Generic short packets
-- **Long packets**: Image data, Generic long packets  
+- **Long packets**: Image data, Generic long packets
 - **Error Correction Code (ECC)** generation and validation
 - **Checksum** calculation and verification
 - **Lane distribution** and merging for multi-lane configurations
@@ -31,7 +35,7 @@ This package provides comprehensive simulation models for MIPI CSI-2 protocol, s
 ### Testing Capabilities
 - **Error injection**: ECC errors, checksum errors, timing violations
 - **Frame assembly** and validation
-- **Timing validation** with configurable parameters  
+- **Timing validation** with configurable parameters
 - **Performance analysis** and throughput measurement
 - **Pattern generation** for testing (ramp, checkerboard, solid)
 
@@ -46,5 +50,11 @@ This package provides comprehensive simulation models for MIPI CSI-2 protocol, s
 
 Installation from pip (release version, stable):
 
-```bash
-pip install cocotbext-csi2
+    $ pip install cocotbext-mipi-csi2
+
+
+Installation for active development:
+
+    $ git clone https://github.com/stonelyd/cocotbext-mipi-csi2
+    $ pip install -e cocotbext-mipi-csi2
+

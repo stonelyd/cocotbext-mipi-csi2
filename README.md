@@ -7,6 +7,9 @@
 
 GitHub repository: https://github.com/stonelyd/cocotbext-mipi-csi2
 
+
+Note: This project is in active developmnet, many of the features listed below have not be implamented or tested.
+
 ## Introduction
 
 MIPI CSI-2 (Camera Serial Interface 2) simulation framework for [cocotb](https://github.com/cocotb/cocotb).
@@ -17,7 +20,7 @@ This package provides comprehensive simulation models for MIPI CSI-2 protocol, s
 
 ### Protocol Support
 - **CSI-2 v4.0.1 compliant** implementation
-- **D-PHY** physical layer support (1, 2, 4, 8 lanes)
+- **D-PHY** physical layer support (1, 2, 4 lanes)
 - **C-PHY** physical layer support (1, 2, 3 trios)
 - **Virtual Channel** support (0-15)
 - **Multiple data types**: RAW8/10/12/16, RGB888/565, YUV422/420
@@ -44,8 +47,6 @@ This package provides comprehensive simulation models for MIPI CSI-2 protocol, s
 - **Extended virtual channels** (CSI-2 v2.0+)
 
 ## Installation
-
-Installation from pip (release version, stable):
 
 Installation from pip (release version, stable):
 

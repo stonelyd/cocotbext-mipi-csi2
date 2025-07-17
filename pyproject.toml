@@ -1,0 +1,175 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cocotbext-mipi-csi2"
+version = "0.1.0"
+description = "MIPI CSI-2 simulation framework for cocotb"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+  { name = "CSI-2 Extension Contributors", email = "contributors@cocotbext-csi2.org" }
+]
+keywords = ["mipi", "csi-2", "dphy", "cphy", "camera", "cocotb", "simulation"]
+requires-python = ">=3.6"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Framework :: cocotb",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.6",
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+  "Topic :: System :: Hardware"
+]
+urls = {
+  "Bug Tracker" = "https://github.com/stonelyd/cocotbext-mipi-csi2/issues",
+  "Source Code" = "https://github.com/stonelyd/cocotbext-mipi-csi2",
+  "Documentation" = "https://cocotbext-mipi-csi2.readthedocs.io/"
+}
+dependencies = [
+  "cocotb >= 1.6.0",
+  "cocotb-bus >= 0.2.1",
+  "numpy >= 1.16.0"
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest >= 6.0",
+  "pytest-cov",
+  "cocotb-test >= 0.2.4"
+]
+dev = [
+  "pytest >= 6.0",
+  "pytest-cov",
+  "cocotb-test >= 0.2.4",
+  "sphinx",
+  "sphinx-rtd-theme",
+  "black",
+  "flake8",
+  "mypy"
+]
+
+[tool.setuptools]
+packages = ["cocotbext", "cocotbext.csi2", "cocotbext.csi2.phy"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.rst", "*.txt"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cocotbext.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode importlib --cov=cocotbext.csi2 --cov-report=html --cov-report=term-missing"
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.coverage.run]
+source = ["cocotbext.csi2"]
+omit = [
+  "*/tests/*",
+  "*/test_*",
+  "setup.py",
+  ".tox/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "def __repr__",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:"
+]
+
+[tool.flake8]
+max-line-length = 100
+extend-ignore = ["E203", "W503"]
+exclude = [
+  ".git",
+  "__pycache__",
+  "build",
+  "dist",
+  "*.egg-info"
+]
+
+[tool.mypy]
+python_version = "3.6"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[tool.mypy-cocotb.*]
+ignore_missing_imports = true
+
+[tool.mypy-numpy.*]
+ignore_missing_imports = true
+
+[tool.mypy-pytest.*]
+ignore_missing_imports = true
+
+[tool.tox]
+legacy_tox_ini = """
+[tox:tox]
+envlist = py37, py38, py39, py310, py311, py312, py313
+skip_missing_interpreters = true
+minversion = 3.18.0
+requires = virtualenv >= 16.1
+
+[gh-actions]
+python =
+    3.7: py37
+    3.8: py38
+    3.9: py39
+    3.10: py310
+    3.11: py311
+    3.12: py312
+    3.13: py313
+
+[testenv]
+setenv =
+    COVERAGE=1
+usedevelop = True
+
+deps =
+    pytest == 8.3.4
+    pytest-xdist == 3.6.1
+    cocotb == 1.9.2
+    cocotb-bus == 0.2.1
+    cocotb-test == 0.2.6
+    numpy >= 1.16.0
+    coverage == 7.0.5
+    pytest-cov == 4.0.0
+
+commands =
+    pytest --cov=cocotbext --cov=tests --cov-branch {posargs:-n auto --verbose}
+    bash -c 'find . -type f -name "\\.coverage" | xargs coverage combine --append'
+    coverage report
+
+allowlist_externals =
+    bash
+
+[coverage:paths]
+source =
+    cocotbext/
+    /*/cocotbext
+"""

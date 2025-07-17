@@ -14,7 +14,7 @@ authors = [
 keywords = ["mipi", "csi-2", "dphy", "cphy", "camera", "cocotb", "simulation"]
 requires-python = ">=3.6"
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 3 - Alpha",
   "Framework :: cocotb",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
@@ -74,10 +74,11 @@ include = ["cocotbext.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--import-mode importlib --cov=cocotbext.csi2 --cov-report=html --cov-report=term-missing"
+addopts = "--import-mode importlib"
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+norecursedirs = ["tests/pending_*", "untested_wip"]
 
 [tool.coverage.run]
 source = ["cocotbext.csi2"]
@@ -85,7 +86,9 @@ omit = [
   "*/tests/*",
   "*/test_*",
   "setup.py",
-  ".tox/*"
+  ".tox/*",
+  "tests/pending_*/*",
+  "untested_wip/*"
 ]
 
 [tool.coverage.report]

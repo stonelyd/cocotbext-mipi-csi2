@@ -11,9 +11,9 @@ import pytest
 import asyncio
 import random
 import os
+from cocotb_test import simulator
 
 from pathlib import Path
-from cocotb.runner import get_runner
 
 
 from cocotb.regression import TestFactory
@@ -400,52 +400,28 @@ if cocotb.SIM_NAME:
 
 
 
+# cocotb-test integration
 
-class Test_Csi2Basic:
-
-    tests_dir = os.path.dirname(__file__)
-
+tests_dir = os.path.dirname(__file__)
 
 
+def test_csi2_basic(request):
+    """Test function for cocotb-test integration"""
+    dut = "test_csi2_basic"
+    module = os.path.splitext(os.path.basename(__file__))[0]
+    toplevel = dut
 
-    def test_csi2_basic_runner():
-        sim = os.getenv("SIM", "icarus")
+    verilog_sources = [
+        os.path.join(os.path.dirname(__file__), f"{dut}.v"),
+    ]
 
-        proj_path = Path(__file__).resolve().parent
+    sim_build = os.path.join(tests_dir, "sim_build",
+        request.node.name.replace('[', '-').replace(']', ''))
 
-        dut = "test_csi2_basic"
-        sources = [os.path.join(os.path.dirname(__file__), f"{dut}.v"), ]
-
-        runner = get_runner(sim)
-        runner.build(
-            sources=sources,
-            hdl_toplevel="test_csi2_basic",
-        )
-
-        runner.test(hdl_toplevel="test_csi2_basic", test_module="test_csi2_basic,")
-
-
-# # cocotb-test
-
-# tests_dir = os.path.dirname(__file__)
-
-
-# def test_pcie(request):
-#     dut = "test_pcie"
-#     module = os.path.splitext(os.path.basename(__file__))[0]
-#     toplevel = dut
-
-#     verilog_sources = [
-#         os.path.join(os.path.dirname(__file__), f"{dut}.v"),
-#     ]
-
-#     sim_build = os.path.join(tests_dir, "sim_build",
-#         request.node.name.replace('[', '-').replace(']', ''))
-
-#     cocotb_test.simulator.run(
-#         python_search=[tests_dir],
-#         verilog_sources=verilog_sources,
-#         toplevel=toplevel,
-#         module=module,
-#         sim_build=sim_build,
-#     )
+    simulator.run(
+        python_search=[tests_dir],
+        verilog_sources=verilog_sources,
+        toplevel=toplevel,
+        module=module,
+        sim_build=sim_build,
+    )

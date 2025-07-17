@@ -211,7 +211,6 @@ transcript
 *.do
 *.tcl
 *.mpf
-*.ini
 *.bak
 *.old
 *.orig

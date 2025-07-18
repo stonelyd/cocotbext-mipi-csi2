@@ -31,7 +31,7 @@ jobs:
     - name: Test with tox
       run: tox
 
-    - name: Upload coverage to codecov
-      run: |
-        pip install codecov
-        codecov
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        slug: stonelyd/cocotbext-mipi-csi2

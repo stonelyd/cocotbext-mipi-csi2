@@ -1,7 +1,7 @@
 # MIPI CSI-2 simulation framework for Cocotb
 
 [![Regression Tests](https://github.com/stonelyd/cocotbext-mipi-csi2/actions/workflows/regression-tests.yml/badge.svg)](https://github.com/stonelyd/cocotbext-mipi-csi2/actions/workflows/regression-tests.yml)
-[![codecov](https://codecov.io/gh/stonelyd/cocotbext-mipi-csi2/branch/master/graph/badge.svg)](https://codecov.io/gh/stonelyd/cocotbext-mipi-csi2)
+[![codecov](https://codecov.io/gh/stonelyd/cocotbext-mipi-csi2/graph/badge.svg?token=GZA2X439U8)](https://codecov.io/gh/stonelyd/cocotbext-mipi-csi2)
 [![PyPI version](https://badge.fury.io/py/cocotbext-mipi-csi2.svg)](https://pypi.org/project/cocotbext-mipi-csi2)
 [![Downloads](https://pepy.tech/badge/cocotbext-mipi-csi2)](https://pepy.tech/project/cocotbext-mipi-csi2)
 

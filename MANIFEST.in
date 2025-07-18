@@ -1,6 +1,6 @@
 include LICENSE
 include README.md
-include cocotbext/csi2/about.py
+include cocotbext/mipi_csi2/about.py
 recursive-include cocotbext *.py
 recursive-include tests Makefile test_*.py test_*.v
 exclude tests/*/__pycache__/*

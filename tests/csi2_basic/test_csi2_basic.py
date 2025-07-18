@@ -18,11 +18,11 @@ from pathlib import Path
 
 from cocotb.regression import TestFactory
 
-from cocotbext.csi2 import (
+from cocotbext.mipi_csi2 import (
     Csi2TxModel, Csi2RxModel, Csi2Config, PhyType, DataType,
     Csi2Bus, Csi2DPhyBus, Csi2ShortPacket, Csi2LongPacket
 )
-from cocotbext.csi2.utils import setup_logging
+from cocotbext.mipi_csi2.utils import setup_logging
 
 
 class TB:
@@ -75,12 +75,12 @@ class TB:
                     cocotb.log.info(f"  data{i}_p: {p_val}, data{i}_n: {n_val}")
 
             # Create separate TX and RX PHY models for loopback testing
-            from cocotbext.csi2.phy import DPhyTxModel, DPhyRxModel
+            from cocotbext.mipi_csi2.phy import DPhyTxModel, DPhyRxModel
             self.tx_phy_model = DPhyTxModel(self.bus, self.config)
             self.rx_phy_model = DPhyRxModel(self.bus, self.config)
         else:
             self.bus = Csi2Bus.from_entity(self.dut)
-            from cocotbext.csi2.phy import CPhyModel
+            from cocotbext.mipi_csi2.phy import CPhyModel
             self.tx_phy_model = CPhyModel(self.bus, self.config)
             self.rx_phy_model = CPhyModel(self.bus, self.config)
 
@@ -200,7 +200,7 @@ async def run_long_packet_transmission(dut, lane_count=4, data_format="raw8", **
         # Create Raw10 Long packet with 16 pixels (20 bytes payload)
         pixel_count = 16
         pixels = [(i * 1023) // (pixel_count - 1) for i in range(pixel_count)]  # 10-bit ramp
-        from cocotbext.csi2.utils import pack_raw10
+        from cocotbext.mipi_csi2.utils import pack_raw10
         payload_data = pack_raw10(pixels)
         data_type = DataType.RAW10
         expected_word_count = 20

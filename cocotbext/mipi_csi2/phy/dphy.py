@@ -184,7 +184,7 @@ class DPhyTxModel:
         # For backward compatibility, create data_tx list
         self.data_tx = self.tx_lanes
 
-        self.logger = logging.getLogger('cocotbext.csi2.dphy.tx_model')
+        self.logger = logging.getLogger('cocotbext.mipi_csi2.dphy.tx_model')
 
         # Timing
         self.bit_period_ns = config.get_bit_period_ns()
@@ -222,7 +222,7 @@ class DPhyTxModel:
         self.lane_signals[lane.name] = {'p': sig_p, 'n': sig_n}
 
         # Logger
-        self.lane_loggers[lane.name] = logging.getLogger(f'cocotbext.csi2.dphy.tx.{lane.name}')
+        self.lane_loggers[lane.name] = logging.getLogger(f'cocotbext.mipi_csi2.dphy.tx.{lane.name}')
         self.lane_loggers[lane.name].info(f"Lane {lane.name}: TX signal handles - p: {sig_p.value}, n: {sig_n.value}")
 
         # Initialize signals to LP-11 state
@@ -656,7 +656,7 @@ class DPhyRxModel:
             t_hs_trail=config.t_hs_trail_ns,
             t_hs_exit=config.t_hs_exit_ns
         )
-        self.logger = logging.getLogger('cocotbext.csi2.dphy.rx_model')
+        self.logger = logging.getLogger('cocotbext.mipi_csi2.dphy.rx_model')
 
         # Create receivers for clock and data lanes
         self.clock_lane = DPhyLane(DPhyLaneType.CLOCK)

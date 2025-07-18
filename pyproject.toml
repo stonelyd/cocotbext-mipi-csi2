@@ -63,7 +63,7 @@ dev = [
 include-package-data = true
 
 [tool.setuptools.dynamic]
-version = {attr = "cocotbext.csi2.about.__version__"}
+version = {attr = "cocotbext.mipi_csi2.about.__version__"}
 
 [tool.setuptools.package-data]
 "*" = ["*.md", "*.rst", "*.txt"]
@@ -81,7 +81,7 @@ python_functions = "test_*"
 norecursedirs = ["tests/pending_*", "untested_wip"]
 
 [tool.coverage.run]
-source = ["cocotbext.csi2"]
+source = ["cocotbext.mipi_csi2"]
 omit = [
   "*/tests/*",
   "*/test_*",

@@ -230,7 +230,7 @@ class Csi2RxModel:
         self.on_line_start: Optional[Callable] = None
         self.on_line_end: Optional[Callable] = None
 
-        self.logger = logging.getLogger('cocotbext.csi2.rx')
+        self.logger = logging.getLogger('cocotbext.mipi_csi2.rx')
 
         # Set up PHY callbacks
         self.phy_model.set_rx_callbacks(

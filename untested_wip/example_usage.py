@@ -8,11 +8,11 @@ and multi-lane operations.
 """
 
 import asyncio
-from cocotbext.csi2 import *
-from cocotbext.csi2.config import Csi2Config, PhyType, DataType, VirtualChannel
-from cocotbext.csi2.packet import Csi2ShortPacket, Csi2LongPacket
-from cocotbext.csi2.utils import calculate_ecc, validate_checksum, generate_test_pattern
-from cocotbext.csi2.exceptions import *
+from cocotbext.mipi_csi2 import *
+from cocotbext.mipi_csi2.config import Csi2Config, PhyType, DataType, VirtualChannel
+from cocotbext.mipi_csi2.packet import Csi2ShortPacket, Csi2LongPacket
+from cocotbext.mipi_csi2.utils import calculate_ecc, validate_checksum, generate_test_pattern
+from cocotbext.mipi_csi2.exceptions import *
 
 
 def demonstrate_basic_features():
@@ -201,5 +201,5 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 60)
     print("CSI-2 Extension Ready for Integration!")
-    print("Use 'from cocotbext.csi2 import *' to start testing")
+    print("Use 'from cocotbext.mipi_csi2 import *' to start testing")
     print("=" * 60)

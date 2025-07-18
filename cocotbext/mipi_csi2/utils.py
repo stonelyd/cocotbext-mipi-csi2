@@ -437,7 +437,7 @@ def create_image_frame_sequence(width: int, height: int,
 
 def setup_logging(level: int = logging.INFO):
     """Setup logging for CSI-2 extension"""
-    logger = logging.getLogger('cocotbext.csi2')
+    logger = logging.getLogger('cocotbext.mipi_csi2')
     logger.setLevel(level)
 
     if not logger.handlers:

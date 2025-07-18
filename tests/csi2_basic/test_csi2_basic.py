@@ -206,6 +206,16 @@ async def run_long_packet_transmission(dut, lane_count=4, data_format="raw8", **
         expected_word_count = 20
         expected_payload_length = 20
         format_name = "Raw10"
+    elif data_format == "raw12":
+        # Create Raw12 Long packet with 16 pixels (24 bytes payload)
+        pixel_count = 16
+        pixels = [(i * 4095) // (pixel_count - 1) for i in range(pixel_count)]  # 12-bit ramp
+        from cocotbext.mipi_csi2.utils import pack_raw12
+        payload_data = pack_raw12(pixels)
+        data_type = DataType.RAW12
+        expected_word_count = 24
+        expected_payload_length = 24
+        format_name = "Raw12"
     else:
         raise ValueError(f"Unsupported data format: {data_format}")
 
@@ -387,7 +397,7 @@ if cocotb.SIM_NAME:
     # Add long packet factory
     factory_long = TestFactory(run_long_packet_transmission)
     factory_long.add_option("lane_count", [1, 2, 4])
-    factory_long.add_option("data_format", ["raw8", "raw10"])
+    factory_long.add_option("data_format", ["raw8", "raw10", "raw12"])
     factory_long.generate_tests()
 
     # Add frame transmission factory

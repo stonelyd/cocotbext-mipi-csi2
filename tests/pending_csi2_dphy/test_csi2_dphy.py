@@ -9,12 +9,12 @@ from cocotb.triggers import Timer, RisingEdge, FallingEdge
 from cocotb.clock import Clock
 import pytest
 
-from cocotbext.csi2 import (
+from cocotbext.mipi_csi2 import (
     Csi2TxModel, Csi2RxModel, Csi2Config, PhyType, DataType,
     Csi2DPhyBus, Csi2ShortPacket, Csi2LongPacket
 )
-from cocotbext.csi2.phy import DPhyTxModel, DPhyRxModel
-from cocotbext.csi2.config import Csi2PhyConfig
+from cocotbext.mipi_csi2.phy import DPhyTxModel, DPhyRxModel
+from cocotbext.mipi_csi2.config import Csi2PhyConfig
 
 
 @cocotb.test()

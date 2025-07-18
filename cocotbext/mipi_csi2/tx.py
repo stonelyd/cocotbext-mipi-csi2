@@ -114,7 +114,7 @@ class Csi2TxModel:
         # Packet builder for convenience
         self.packet_builder = Csi2PacketBuilder()
 
-        self.logger = logging.getLogger('cocotbext.csi2.tx')
+        self.logger = logging.getLogger('cocotbext.mipi_csi2.tx')
 
         # Start transmission task
         self._tx_task = cocotb.start_soon(self._transmission_handler())

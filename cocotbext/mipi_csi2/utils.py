@@ -317,6 +317,81 @@ def unpack_raw12(data: bytes) -> List[int]:
     return pixels
 
 
+def pack_yuv420(y_pixels: List[int], u_pixels: List[int], v_pixels: List[int]) -> bytes:
+    """
+    Pack YUV420 format data for CSI-2 transmission
+
+    YUV420 uses 4:2:0 chroma subsampling:
+    - Y plane: full resolution (width × height)
+    - U plane: quarter resolution (width/2 × height/2)
+    - V plane: quarter resolution (width/2 × height/2)
+
+    Total bytes = width × height × 1.5
+
+    Args:
+        y_pixels: Y (luma) pixel values (full resolution)
+        u_pixels: U (chroma) pixel values (quarter resolution)
+        v_pixels: V (chroma) pixel values (quarter resolution)
+
+    Returns:
+        Packed YUV420 byte data
+    """
+    if len(u_pixels) != len(v_pixels):
+        raise ValueError("U and V pixel arrays must have same length")
+
+    if len(u_pixels) != len(y_pixels) // 4:
+        raise ValueError("U and V arrays must be quarter resolution of Y array")
+
+    packed = bytearray()
+
+    # Add Y plane data (full resolution)
+    for y_val in y_pixels:
+        packed.append(y_val & 0xFF)
+
+    # Add U plane data (quarter resolution)
+    for u_val in u_pixels:
+        packed.append(u_val & 0xFF)
+
+    # Add V plane data (quarter resolution)
+    for v_val in v_pixels:
+        packed.append(v_val & 0xFF)
+
+    return bytes(packed)
+
+
+def unpack_yuv420(data: bytes, width: int, height: int) -> Tuple[List[int], List[int], List[int]]:
+    """
+    Unpack CSI-2 YUV420 format into Y, U, V pixel arrays
+
+    Args:
+        data: Packed YUV420 byte data
+        width: Image width in pixels
+        height: Image height in pixels
+
+    Returns:
+        Tuple of (y_pixels, u_pixels, v_pixels)
+    """
+    expected_size = width * height * 3 // 2  # 1.5 bytes per pixel
+    if len(data) != expected_size:
+        raise ValueError(f"YUV420 data length mismatch: expected {expected_size}, got {len(data)}")
+
+    y_size = width * height
+    u_size = v_size = y_size // 4
+
+    # Extract Y plane (full resolution)
+    y_pixels = [data[i] for i in range(y_size)]
+
+    # Extract U plane (quarter resolution)
+    u_start = y_size
+    u_pixels = [data[u_start + i] for i in range(u_size)]
+
+    # Extract V plane (quarter resolution)
+    v_start = y_size + u_size
+    v_pixels = [data[v_start + i] for i in range(v_size)]
+
+    return y_pixels, u_pixels, v_pixels
+
+
 def generate_test_pattern(width: int, height: int, pattern_type: str = "ramp") -> bytes:
     """
     Generate test pattern data for CSI-2 testing

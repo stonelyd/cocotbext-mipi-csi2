@@ -434,7 +434,7 @@ if cocotb.SIM_NAME:
     # Add long packet factory
     factory_long = TestFactory(run_long_packet_transmission)
     factory_long.add_option("lane_count", [1, 2, 4])
-    factory_long.add_option("data_format", ["raw8", "raw10", "raw12", "yuv420"])
+    factory_long.add_option("data_format", ["raw8", "raw10", "raw12", "raw16", "yuv420", "yuv422"])
     factory_long.generate_tests()
 
     # Add frame transmission factory

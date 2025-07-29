@@ -174,8 +174,8 @@ async def run_short_packet_transmission(dut, lane_count=4, packet_type="frame_st
 
     await tb.rx_model.reset()
 
-@cocotb.test()
-async def run_long_packet_transmission(dut, lane_count=4, data_format="raw16", **kwargs):
+# @cocotb.test()
+async def run_long_packet_transmission(dut, lane_count=4, data_format="yuv422", **kwargs):
     """Test CSI-2 Long packet transmission and reception with lane distribution enabled"""
     setup_logging()
     tb = TB(dut)
@@ -423,24 +423,24 @@ async def run_frame_transmission(dut, lane_count=1):
     await tb.rx_model.reset()
 
 
-# if cocotb.SIM_NAME:
+if cocotb.SIM_NAME:
 
 
-    # factory = TestFactory(run_short_packet_transmission)
-    # factory.add_option("lane_count", [1, 2, 4])
-    # factory.add_option("packet_type", ["frame_start", "frame_end", "line_start", "line_end"])
-    # factory.generate_tests()
+    factory = TestFactory(run_short_packet_transmission)
+    factory.add_option("lane_count", [1, 2, 4])
+    factory.add_option("packet_type", ["frame_start", "frame_end", "line_start", "line_end"])
+    factory.generate_tests()
 
-    # # Add long packet factory
-    # factory_long = TestFactory(run_long_packet_transmission)
-    # factory_long.add_option("lane_count", [1, 2, 4])
-    # factory_long.add_option("data_format", ["raw8", "raw10", "raw12", "yuv420"])
-    # factory_long.generate_tests()
+    # Add long packet factory
+    factory_long = TestFactory(run_long_packet_transmission)
+    factory_long.add_option("lane_count", [1, 2, 4])
+    factory_long.add_option("data_format", ["raw8", "raw10", "raw12", "yuv420"])
+    factory_long.generate_tests()
 
-    # # Add frame transmission factory
-    # factory_frame = TestFactory(run_frame_transmission)
-    # factory_frame.add_option("lane_count", [1, 2, 4])
-    # factory_frame.generate_tests()
+    # Add frame transmission factory
+    factory_frame = TestFactory(run_frame_transmission)
+    factory_frame.add_option("lane_count", [1, 2, 4])
+    factory_frame.generate_tests()
 
 
 

@@ -359,6 +359,71 @@ def pack_yuv420(y_pixels: List[int], u_pixels: List[int], v_pixels: List[int]) -
     return bytes(packed)
 
 
+def pack_yuv422(y_pixels: List[int], u_pixels: List[int], v_pixels: List[int]) -> bytes:
+    """
+    Pack YUV422 format data for CSI-2 transmission
+
+    YUV422 uses 4:2:2 chroma subsampling:
+    - Y plane: full resolution (width × height)
+    - U plane: half resolution (width/2 × height)
+    - V plane: half resolution (width/2 × height)
+
+    Total bytes = width × height × 2
+
+    Args:
+        y_pixels: Y (luma) pixel values (full resolution)
+        u_pixels: U (chroma) pixel values (half resolution)
+        v_pixels: V (chroma) pixel values (half resolution)
+
+    Returns:
+        Packed YUV422 byte data
+    """
+    if len(u_pixels) != len(v_pixels):
+        raise ValueError("U and V pixel arrays must have same length")
+
+    if len(u_pixels) != len(y_pixels) // 2:
+        raise ValueError("U and V arrays must be half resolution of Y array")
+
+    packed = bytearray()
+
+    # Add Y plane data (full resolution)
+    for y_val in y_pixels:
+        packed.append(y_val & 0xFF)
+
+    # Add U plane data (half resolution)
+    for u_val in u_pixels:
+        packed.append(u_val & 0xFF)
+
+    # Add V plane data (half resolution)
+    for v_val in v_pixels:
+        packed.append(v_val & 0xFF)
+
+    return bytes(packed)
+
+
+def pack_raw16(pixels: List[int]) -> bytes:
+    """
+    Pack 16-bit RAW pixels into CSI-2 RAW16 format
+
+    RAW16 stores each pixel as 2 bytes (little-endian):
+    - Byte 0: P[7:0]
+    - Byte 1: P[15:8]
+
+    Args:
+        pixels: List of 16-bit pixel values
+
+    Returns:
+        Packed byte data
+    """
+    packed = bytearray()
+
+    for pixel in pixels:
+        # Pack as little-endian 16-bit values
+        packed.extend(struct.pack('<H', pixel & 0xFFFF))
+
+    return bytes(packed)
+
+
 def unpack_yuv420(data: bytes, width: int, height: int) -> Tuple[List[int], List[int], List[int]]:
     """
     Unpack CSI-2 YUV420 format into Y, U, V pixel arrays

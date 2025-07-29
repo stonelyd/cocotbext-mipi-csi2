@@ -449,7 +449,7 @@ if cocotb.SIM_NAME:
 
 # cocotb-test integration
 
-# tests_dir = os.path.dirname(__file__)
+tests_dir = os.path.dirname(__file__)
 
 
 def test_csi2_basic(request):

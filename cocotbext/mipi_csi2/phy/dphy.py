@@ -789,12 +789,38 @@ class DPhyRxModel:
         self._clock_monitor_task = cocotb.start_soon(self._monitor_clock_events())
 
     async def _monitor_clock_events(self):
-        """Monitor clock lane for edge events"""
+        """Monitor clock lane for edge events - enhanced for non-continuous mode"""
         while True:
-            # D-PHY is DDR, so we must sample on every clock edge
+            if self.config.continuous_clock:
+                # Existing behavior: sample on every edge
+                await Edge(self.bus.clk_p)
+                for lane_idx in self.enabled_lanes:
+                    await self._sample_data_lane(lane_idx)
+            else:
+                # New: non-continuous mode handling
+                await self._monitor_non_continuous_clock()
+
+    async def _monitor_non_continuous_clock(self):
+        """Monitor clock lane state transitions in non-continuous mode"""
+        while True:
+            # Wait for any change on clock lane
             await Edge(self.bus.clk_p)
+            
+            # Always sample data lanes on clock edge - let data lane state machines handle LP vs HS
+            # The key difference in non-continuous mode is that clock edges only happen during transmission
             for lane_idx in self.enabled_lanes:
                 await self._sample_data_lane(lane_idx)
+
+    def _is_clock_lane_hs_active(self) -> bool:
+        """Detect if clock lane is in HS mode vs LP-11"""
+        try:
+            clk_p = int(self.bus.clk_p.value)
+            clk_n = int(self.bus.clk_n.value)
+            # HS mode: differential signaling (p != n)
+            # LP-11 mode: both high (p=1, n=1)
+            return clk_p != clk_n
+        except (ValueError, TypeError):
+            return False
 
     async def _sample_data_lane(self, lane_idx: int):
         """Sample a specific data lane."""

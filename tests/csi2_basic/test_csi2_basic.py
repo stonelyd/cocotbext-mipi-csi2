@@ -506,6 +506,79 @@ async def test_non_continuous_clock_short_packet(dut):
         assert False, "No packets received in non-continuous clock mode"
 
 
+@cocotb.test()
+async def test_multilane_non_continuous_clock_short_packet(dut):
+    """Test multi-lane D-PHY with non-continuous clock mode"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+
+    # Test configurations: 2-lane and 4-lane with non-continuous clock
+    test_configs = [
+        (2, "2-lane"),
+        (4, "4-lane"),
+    ]
+    
+    for lane_count, desc in test_configs:
+        cocotb.log.info(f"=== Testing {desc} Non-Continuous Clock Mode ===")
+        
+        # Configure for multi-lane + non-continuous clock
+        await tb.configure_csi2(lane_count=lane_count, bit_rate_mbps=1000, continuous_clock=False)
+        tb.config.lane_distribution_enabled = True  # Enable multi-lane distribution
+        tb.tx_phy_model.config.lane_distribution_enabled = True
+        tb.rx_phy_model.config.lane_distribution_enabled = True
+        
+        cocotb.log.info(f"Configuration: lanes={lane_count}, continuous_clock=False, lane_distribution=True")
+        
+        await tb.rx_model.reset()
+        tb.rx_model.enable_frame_assembly(True)
+
+        # Create and send a short packet
+        pkt = Csi2ShortPacket.frame_start(virtual_channel=0, frame_number=1)
+        packet_bytes = pkt.to_bytes()
+        cocotb.log.info(f"Transmitting {desc} non-continuous packet: {len(packet_bytes)} bytes")
+        cocotb.log.info(f"Packet bytes: {[f'{b:02x}' for b in packet_bytes]}")
+
+        try:
+            cocotb.log.info(f"Starting {desc} non-continuous clock packet transmission")
+            await with_timeout(tb.tx_phy_model.start_packet_transmission(), 100_000_000, 'ns')
+            cocotb.log.info(f"{desc} non-continuous clock packet transmission started")
+            
+            await with_timeout(tb.tx_phy_model.send_packet_data(packet_bytes), 100_000_000, 'ns')
+            cocotb.log.info(f"{desc} non-continuous clock packet data sent")
+            
+            await with_timeout(tb.tx_phy_model.stop_packet_transmission(), 100_000_000, 'ns')
+            cocotb.log.info(f"{desc} non-continuous clock PHY transmission completed")
+            
+        except Exception as e:
+            cocotb.log.error(f"Timeout in {desc} non-continuous clock PHY transmission: {e}")
+            raise
+
+        # Wait for packet reception
+        await Timer(1000, units='ns')
+        
+        try:
+            received_packet = await with_timeout(tb.rx_model.get_next_packet(), 10_000, 'ns')
+            assert received_packet is not None, f"No packet received in {desc} non-continuous mode"
+            cocotb.log.info(f"Received {desc} non-continuous frame start packet: VC={received_packet.virtual_channel}, DT=0x{received_packet.data_type:02x}")
+            assert received_packet.virtual_channel == 0, f"{desc}: Wrong VC"
+            assert received_packet.data_type == DataType.FRAME_START.value, f"{desc}: Wrong data type"
+            cocotb.log.info(f"{desc} non-continuous clock mode test PASSED!")
+            
+        except Exception as e:
+            cocotb.log.error(f"Error receiving {desc} packet: {e}")
+            # Try to get any available packets for debugging
+            try:
+                received_packet = await with_timeout(tb.rx_model.get_next_packet(), 1000, 'ns')
+                if received_packet:
+                    cocotb.log.info(f"Received unexpected {desc} packet: VC={received_packet.virtual_channel}, DT=0x{received_packet.data_type:02x}")
+            except:
+                pass
+            assert False, f"No packets received in {desc} non-continuous clock mode"
+
+    cocotb.log.info("All multi-lane non-continuous clock tests PASSED!")
+
+
 # cocotb-test integration
 
 tests_dir = os.path.dirname(__file__)

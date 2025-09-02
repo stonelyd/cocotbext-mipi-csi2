@@ -25,26 +25,28 @@ Implement the remaining 5 Archon tasks in priority order to deliver a complete, 
 ### Documentation & References
 ```yaml
 # MUST READ - Include these in your context window
+- read the archon knowlegebase!!!!
+
 - spec: MIPI CSI-2 v4.0.1 Specification Section 7.1
   why: D-PHY multi-lane requirements and timing coordination
   critical: Lane synchronization and skew tolerance requirements
-  
-- spec: MIPI D-PHY v2.5 Specification Section 10.2  
+
+- spec: MIPI D-PHY v2.5 Specification Section 10.2
   why: Multi-lane data-clock timing specifications
   critical: Lane-to-lane skew requirements and clock recovery timing
-  
+
 - file: cocotbext/mipi_csi2/utils.py:114-156
   why: Existing bytes_to_lanes() and lanes_to_bytes() functions
   pattern: Lane distribution algorithm foundation already exists
-  
+
 - file: cocotbext/mipi_csi2/phy/dphy.py:725-850
   why: Current DPhyRxModel implementation and _monitor_clock_events()
   pattern: Receiver state machine and clock monitoring patterns
-  
+
 - file: tests/csi2_basic/test_csi2_basic.py:100-175
   why: Existing test patterns for packet transmission and validation
   pattern: TestFactory usage and cocotb test structure
-  
+
 - file: pyproject.toml:1-125
   why: Current build configuration and dependencies
   pattern: setuptools configuration and version management
@@ -127,7 +129,7 @@ async def send_packet_data(self, data: bytes):
     """Enhanced to use all configured lanes"""
     # Current: only uses self.data_lanes[0] (line 618)
     # New: distribute data across all lanes using utils.bytes_to_lanes()
-    
+
     if len(self.data_lanes) > 1 and self.config.lane_distribution_enabled:
         lane_data = bytes_to_lanes(data, len(self.data_lanes))
         # Send data on all lanes simultaneously with proper timing
@@ -144,17 +146,17 @@ async def _sample_data_lane(self, lane_idx: int):
     """Enhanced with lane synchronization"""
     # Current: basic per-lane sampling (line 799)
     # New: coordinate with other lanes for packet reconstruction
-    
+
     # Handle non-continuous clock coordination
     if not self.config.continuous_clock:
         # Check if clock lane is in HS mode before sampling
         if not self._is_clock_lane_hs_active():
             return  # Skip sampling when clock is LP-11
-    
+
     # Existing sampling logic enhanced with multi-lane coordination
 ```
 
-##### Task 4: Receiver Clock Recovery Enhancement (Priority: HIGH)  
+##### Task 4: Receiver Clock Recovery Enhancement (Priority: HIGH)
 ```python
 # 1. Enhance _monitor_clock_events for non-continuous mode
 async def _monitor_clock_events(self):
@@ -198,7 +200,7 @@ test_configurations = [
     # (lanes, clock_mode, bit_rate, data_type)
     (1, True, 500, "frame_start"),   # Baseline continuous
     (1, False, 500, "frame_start"),  # Non-continuous single
-    (2, True, 1000, "frame_start"),  # Multi-lane continuous  
+    (2, True, 1000, "frame_start"),  # Multi-lane continuous
     (2, False, 1000, "frame_start"), # Multi-lane non-continuous
     (4, True, 1500, "frame_start"),  # High-speed multi-lane
     (4, False, 1500, "frame_start"), # High-speed non-continuous
@@ -207,7 +209,7 @@ test_configurations = [
 # 2. Enhanced TestFactory usage
 factory = TestFactory(run_comprehensive_csi2_test)
 factory.add_option("lane_count", [1, 2, 4])
-factory.add_option("continuous_clock", [True, False])  
+factory.add_option("continuous_clock", [True, False])
 factory.add_option("bit_rate_mbps", [500, 1000, 1500])
 factory.add_option("packet_type", ["frame_start", "frame_end", "long_packet"])
 factory.generate_tests()
@@ -227,7 +229,7 @@ async def test_error_injection_scenarios(dut):
 docs/
 ├── source/
 │   ├── conf.py              # Sphinx configuration
-│   ├── index.rst            # Main documentation index  
+│   ├── index.rst            # Main documentation index
 │   ├── api/                 # API reference (auto-generated)
 │   ├── tutorials/           # Getting started guides
 │   └── examples/            # Code examples
@@ -249,7 +251,7 @@ docs/
 # 2. Release checklist automation
 # - Version bump in about.py: 0.2.0 -> 0.3.0
 # - Generate release notes from Archon tasks
-# - Build and test distribution packages  
+# - Build and test distribution packages
 # - Upload to PyPI with authentication
 ```
 
@@ -258,11 +260,11 @@ docs/
 #### Task 3: Multi-Lane D-PHY Implementation Steps
 1. **Enhance utils.py lane distribution** (if needed)
 2. **Modify DPhyTxModel.send_packet_data()** for true multi-lane
-3. **Enhance DPhyRxModel lane coordination** and packet reconstruction  
+3. **Enhance DPhyRxModel lane coordination** and packet reconstruction
 4. **Add multi-lane timing validation** and lane skew handling
 5. **Coordinate with non-continuous clock** for all lane configurations
 
-#### Task 4: Receiver Enhancement Implementation Steps  
+#### Task 4: Receiver Enhancement Implementation Steps
 1. **Enhance _monitor_clock_events()** for non-continuous detection
 2. **Add clock state detection methods** (_is_clock_lane_hs_active)
 3. **Implement _monitor_non_continuous_clock()** state machine
@@ -272,7 +274,7 @@ docs/
 #### Task 5: Testing Suite Implementation Steps
 1. **Create comprehensive test matrix** (lanes × clock_mode × bit_rates)
 2. **Implement error injection framework** (ECC, checksum, timing)
-3. **Add performance benchmarking** and power analysis tests  
+3. **Add performance benchmarking** and power analysis tests
 4. **Create pattern generators** (ramp, checkerboard, solid)
 5. **Validate >95% code coverage** across all configurations
 
@@ -287,7 +289,7 @@ docs/
 1. **Set up GitHub Actions** for automated releases
 2. **Version management** and release notes generation
 3. **Distribution building** and testing automation
-4. **PyPI authentication** and upload automation  
+4. **PyPI authentication** and upload automation
 5. **Release validation** and rollback procedures
 
 ## Validation Loop
@@ -312,7 +314,7 @@ make MODULE=test_csi2_basic TESTCASE=test_multilane_non_continuous_clock
 ```
 
 ### Level 3: Receiver Non-Continuous Mode Tests
-```bash  
+```bash
 # Test receiver clock recovery
 make MODULE=test_csi2_basic TESTCASE=test_receiver_non_continuous_recovery
 
@@ -353,7 +355,7 @@ pip install dist/cocotbext_mipi_csi2-0.3.0-py3-none-any.whl
 
 ## Final Validation Checklist
 - [ ] Multi-lane D-PHY (2, 4 lanes) works in both clock modes
-- [ ] Receiver handles non-continuous clock gaps correctly  
+- [ ] Receiver handles non-continuous clock gaps correctly
 - [ ] All existing single-lane tests pass unchanged
 - [ ] Comprehensive test suite achieves >95% coverage
 - [ ] Documentation builds cleanly with API reference
@@ -374,7 +376,7 @@ pip install dist/cocotbext_mipi_csi2-0.3.0-py3-none-any.whl
 
 ## Confidence Score: 8/10
 This PRP provides comprehensive implementation guidance including:
-- ✅ Complete analysis of 5 remaining Archon tasks with clear priorities  
+- ✅ Complete analysis of 5 remaining Archon tasks with clear priorities
 - ✅ Detailed codebase context with exact line references and patterns
 - ✅ Step-by-step implementation blueprint with code examples
 - ✅ Comprehensive validation strategy with executable test commands

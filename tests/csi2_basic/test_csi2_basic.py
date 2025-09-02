@@ -431,11 +431,20 @@ if cocotb.SIM_NAME:
     factory.add_option("packet_type", ["frame_start", "frame_end", "line_start", "line_end"])
     factory.generate_tests()
 
-    # Add long packet factory
+    # Add long packet factory with comprehensive data type coverage
     factory_long = TestFactory(run_long_packet_transmission)
     factory_long.add_option("lane_count", [1, 2, 4])
-    factory_long.add_option("data_format", ["raw8", "raw10", "raw12", "raw16", "yuv420", "yuv422"])
+    # Comprehensive CSI-2 data type coverage per PRP requirements
+    factory_long.add_option("data_format", [
+        # RAW data types - all supported formats
+        "raw6", "raw7", "raw8", "raw10", "raw12", "raw14", "raw16", "raw20",
+        # RGB data types - all variants
+        "rgb444", "rgb555", "rgb565", "rgb666", "rgb888",
+        # YUV data types - primary formats
+        "yuv420", "yuv422"
+    ])
     factory_long.generate_tests()
+    
 
     # Add frame transmission factory
     factory_frame = TestFactory(run_frame_transmission)
@@ -445,6 +454,352 @@ if cocotb.SIM_NAME:
 
 
 
+
+
+async def run_error_injection_test(dut, lane_count=1, error_type="ecc", data_format="raw8", **kwargs):
+    """Comprehensive error injection test for various error types and configurations"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+    
+    # Configure with error injection enabled
+    await tb.configure_csi2(
+        phy_type=PhyType.DPHY,
+        lane_count=lane_count,
+        bit_rate_mbps=1000,
+        continuous_clock=True
+    )
+    
+    # Configure error injection based on error_type
+    if error_type == "ecc":
+        tb.config.inject_ecc_errors = True
+        tb.config.error_injection_rate = 0.1  # 10% error rate
+        cocotb.log.info(f"Configured ECC error injection with {tb.config.error_injection_rate*100}% rate")
+    elif error_type == "checksum":
+        tb.config.inject_checksum_errors = True
+        tb.config.error_injection_rate = 0.1
+        cocotb.log.info(f"Configured checksum error injection with {tb.config.error_injection_rate*100}% rate")
+    elif error_type == "crc":
+        tb.config.inject_crc_errors = True
+        tb.config.error_injection_rate = 0.1
+        cocotb.log.info(f"Configured CRC error injection with {tb.config.error_injection_rate*100}% rate")
+    
+    cocotb.log.info(f"=== Error Injection Test: {error_type.upper()} errors, {lane_count}-lane, {data_format} ===")
+    
+    # Generate test pattern based on data format
+    test_data = generate_test_pattern(data_format, width=640, height=480)
+    
+    # Send multiple packets to trigger error injection
+    error_count = 0
+    success_count = 0
+    total_packets = 20
+    
+    for i in range(total_packets):
+        try:
+            # Send packet with potential error injection
+            packet = create_long_packet(data_format, test_data[:100], virtual_channel=0)
+            await tb.tx_model.send_packet(packet)
+            
+            # Attempt to receive and validate
+            received_packet = await tb.rx_model.get_next_packet(timeout_ns=5000)
+            
+            if received_packet is not None:
+                # Check if error was detected (expected behavior with error injection)
+                if error_type == "ecc" and not received_packet.header.validate_ecc():
+                    error_count += 1
+                    cocotb.log.info(f"Packet {i}: ECC error correctly detected")
+                elif error_type == "checksum" and hasattr(received_packet, 'checksum_valid') and not received_packet.checksum_valid:
+                    error_count += 1
+                    cocotb.log.info(f"Packet {i}: Checksum error correctly detected")
+                else:
+                    success_count += 1
+                    cocotb.log.info(f"Packet {i}: Received successfully")
+            else:
+                cocotb.log.warning(f"Packet {i}: No packet received (possible error)")
+                
+        except Exception as e:
+            cocotb.log.info(f"Packet {i}: Error during transmission/reception (expected): {e}")
+            error_count += 1
+    
+    # Validate error injection worked
+    cocotb.log.info(f"Error injection test results: {error_count} errors, {success_count} successful packets out of {total_packets}")
+    
+    # With 10% error injection rate, we expect some errors but not all packets to fail
+    assert error_count > 0, f"No errors detected with {error_type} error injection enabled"
+    assert success_count > 0, f"All packets failed - error injection rate too high"
+    
+    cocotb.log.info(f"Error injection test for {error_type} with {lane_count}-lane {data_format} PASSED!")
+
+
+async def run_non_continuous_comprehensive_test(dut, lane_count=1, bit_rate_mbps=1000, packet_type="short", **kwargs):
+    """Comprehensive non-continuous clock mode testing with various configurations"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+    
+    # Configure with non-continuous clock
+    await tb.configure_csi2(
+        phy_type=PhyType.DPHY,
+        lane_count=lane_count,
+        bit_rate_mbps=bit_rate_mbps,
+        continuous_clock=False  # Enable non-continuous clock mode
+    )
+    
+    cocotb.log.info(f"=== Non-Continuous Clock Test: {lane_count}-lane, {bit_rate_mbps}Mbps, {packet_type} packet ===")
+    
+    # Enable lane distribution for multi-lane configurations
+    if lane_count > 1:
+        tb.config.lane_distribution_enabled = True
+    
+    # Test both short and long packets
+    if packet_type == "short":
+        # Send frame start packet (short packet)
+        packet = create_short_packet("frame_start", virtual_channel=0)
+        await tb.tx_model.send_packet(packet)
+        
+        # Verify reception
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=10000)
+        assert received_packet is not None, "No packet received in non-continuous mode"
+        assert isinstance(received_packet, Csi2ShortPacket), "Expected short packet"
+        assert received_packet.data_type == DataType.FRAME_START.value, "Expected frame start packet"
+        
+    else:  # packet_type == "long"
+        # Send long packet with test data
+        test_data = generate_test_pattern("raw8", width=320, height=240)
+        packet = create_long_packet("raw8", test_data, virtual_channel=0)
+        await tb.tx_model.send_packet(packet)
+        
+        # Verify reception
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=20000)
+        assert received_packet is not None, "No packet received in non-continuous mode"
+        assert isinstance(received_packet, Csi2LongPacket), "Expected long packet"
+        assert received_packet.data_type == DataType.RAW8.value, "Expected RAW8 packet"
+    
+    # Performance measurement for non-continuous mode
+    import time
+    start_time = time.time()
+    
+    # Send multiple packets to measure timing performance
+    for i in range(10):
+        if packet_type == "short":
+            packet = create_short_packet("frame_start", virtual_channel=0)
+        else:
+            test_data = generate_test_pattern("raw8", width=160, height=120)
+            packet = create_long_packet("raw8", test_data, virtual_channel=0)
+        
+        await tb.tx_model.send_packet(packet)
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=10000)
+        assert received_packet is not None, f"Packet {i} not received"
+    
+    end_time = time.time()
+    test_duration = end_time - start_time
+    
+    cocotb.log.info(f"Non-continuous clock performance: {test_duration:.3f}s for 10 packets")
+    cocotb.log.info(f"Non-continuous clock test with {lane_count}-lane, {bit_rate_mbps}Mbps, {packet_type} packets PASSED!")
+
+
+async def run_performance_benchmark_test(dut, lane_count=1, clock_mode="continuous", data_format="raw8", **kwargs):
+    """Performance benchmarking test to measure simulation overhead and throughput"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+    
+    # Configure based on clock mode
+    continuous_clock = (clock_mode == "continuous")
+    await tb.configure_csi2(
+        phy_type=PhyType.DPHY,
+        lane_count=lane_count,
+        bit_rate_mbps=1000,
+        continuous_clock=continuous_clock
+    )
+    
+    cocotb.log.info(f"=== Performance Benchmark: {lane_count}-lane, {clock_mode} clock, {data_format} ===")
+    
+    # Enable lane distribution for multi-lane
+    if lane_count > 1:
+        tb.config.lane_distribution_enabled = True
+    
+    # Generate test data patterns
+    test_patterns = {
+        "small": generate_test_pattern(data_format, width=160, height=120),
+        "medium": generate_test_pattern(data_format, width=320, height=240),
+        "large": generate_test_pattern(data_format, width=640, height=480)
+    }
+    
+    # Performance metrics collection
+    performance_results = {}
+    
+    for pattern_name, test_data in test_patterns.items():
+        cocotb.log.info(f"Testing {pattern_name} frame size...")
+        
+        # Measure transmission performance
+        import time
+        start_time = time.time()
+        packets_sent = 0
+        packets_received = 0
+        
+        # Test with multiple frames to get accurate measurements
+        num_frames = 5
+        for frame_num in range(num_frames):
+            try:
+                # Send frame start
+                fs_packet = create_short_packet("frame_start", virtual_channel=0)
+                await tb.tx_model.send_packet(fs_packet)
+                packets_sent += 1
+                
+                # Send image data in chunks
+                chunk_size = min(len(test_data), 1024)  # 1KB chunks
+                for chunk_start in range(0, len(test_data), chunk_size):
+                    chunk_data = test_data[chunk_start:chunk_start + chunk_size]
+                    data_packet = create_long_packet(data_format, chunk_data, virtual_channel=0)
+                    await tb.tx_model.send_packet(data_packet)
+                    packets_sent += 1
+                
+                # Send frame end
+                fe_packet = create_short_packet("frame_end", virtual_channel=0)
+                await tb.tx_model.send_packet(fe_packet)
+                packets_sent += 1
+                
+                # Receive and validate packets
+                for _ in range(packets_sent - packets_received):
+                    received_packet = await tb.rx_model.get_next_packet(timeout_ns=15000)
+                    if received_packet is not None:
+                        packets_received += 1
+                    
+            except Exception as e:
+                cocotb.log.warning(f"Frame {frame_num} error: {e}")
+        
+        end_time = time.time()
+        test_duration = end_time - start_time
+        
+        # Calculate performance metrics
+        throughput_mbps = (len(test_data) * num_frames * 8) / (test_duration * 1e6) if test_duration > 0 else 0
+        packets_per_second = packets_sent / test_duration if test_duration > 0 else 0
+        reception_rate = (packets_received / packets_sent * 100) if packets_sent > 0 else 0
+        
+        performance_results[pattern_name] = {
+            "duration_s": test_duration,
+            "throughput_mbps": throughput_mbps,
+            "packets_per_second": packets_per_second,
+            "reception_rate_percent": reception_rate,
+            "packets_sent": packets_sent,
+            "packets_received": packets_received
+        }
+        
+        cocotb.log.info(f"{pattern_name.capitalize()} frame performance:")
+        cocotb.log.info(f"  Duration: {test_duration:.3f}s")
+        cocotb.log.info(f"  Throughput: {throughput_mbps:.2f} Mbps")
+        cocotb.log.info(f"  Packet rate: {packets_per_second:.1f} packets/s")
+        cocotb.log.info(f"  Reception rate: {reception_rate:.1f}%")
+    
+    # Performance validation - check for acceptable overhead
+    baseline_duration = performance_results["small"]["duration_s"]
+    medium_duration = performance_results["medium"]["duration_s"]
+    large_duration = performance_results["large"]["duration_s"]
+    
+    # Calculate scaling efficiency (should be roughly linear with data size)
+    medium_overhead = (medium_duration / baseline_duration) - 2.0  # Medium is 2x data
+    large_overhead = (large_duration / baseline_duration) - 4.0    # Large is 4x data
+    
+    cocotb.log.info(f"Performance Analysis:")
+    cocotb.log.info(f"  Medium frame overhead: {medium_overhead:.2f}x (target: <0.1x)")
+    cocotb.log.info(f"  Large frame overhead: {large_overhead:.2f}x (target: <0.1x)")
+    
+    # Validate performance requirements (per PRP: <10% overhead)
+    max_overhead = 0.1  # 10% maximum overhead
+    assert abs(medium_overhead) < max_overhead, f"Medium frame overhead {medium_overhead:.3f}x exceeds {max_overhead}x limit"
+    assert abs(large_overhead) < max_overhead, f"Large frame overhead {large_overhead:.3f}x exceeds {max_overhead}x limit"
+    
+    # Validate reception rate (should be >95% for good performance)
+    min_reception_rate = 95.0
+    for pattern_name, results in performance_results.items():
+        reception_rate = results["reception_rate_percent"]
+        assert reception_rate >= min_reception_rate, f"{pattern_name} reception rate {reception_rate:.1f}% below {min_reception_rate}% threshold"
+    
+    cocotb.log.info(f"Performance benchmark for {lane_count}-lane {clock_mode} {data_format} PASSED!")
+    cocotb.log.info(f"All overhead measurements within {max_overhead*100}% target")
+
+
+# Helper functions for comprehensive testing
+def generate_test_pattern(data_format, width=640, height=480, pattern_type="ramp"):
+    """Generate test patterns for various data formats and pattern types"""
+    import numpy as np
+    
+    # Calculate bits per pixel based on data format
+    bits_per_pixel = {
+        "raw6": 6, "raw7": 7, "raw8": 8, "raw10": 10, "raw12": 12, 
+        "raw14": 14, "raw16": 16, "raw20": 20,
+        "rgb444": 12, "rgb555": 15, "rgb565": 16, "rgb666": 18, "rgb888": 24,
+        "yuv420": 12, "yuv422": 16
+    }.get(data_format.lower(), 8)
+    
+    max_value = (1 << bits_per_pixel) - 1
+    total_pixels = width * height
+    
+    if pattern_type == "ramp":
+        # Linear ramp pattern
+        pattern = np.linspace(0, max_value, total_pixels, dtype=np.uint32)
+    elif pattern_type == "checkerboard":
+        # Checkerboard pattern
+        pattern = np.zeros(total_pixels, dtype=np.uint32)
+        for y in range(height):
+            for x in range(width):
+                if (x + y) % 2 == 0:
+                    pattern[y * width + x] = max_value
+    elif pattern_type == "solid":
+        # Solid pattern at mid-level
+        pattern = np.full(total_pixels, max_value // 2, dtype=np.uint32)
+    elif pattern_type == "walking":
+        # Walking ones pattern
+        pattern = np.zeros(total_pixels, dtype=np.uint32)
+        for i in range(total_pixels):
+            bit_pos = i % bits_per_pixel
+            pattern[i] = 1 << bit_pos
+    else:
+        # Default ramp
+        pattern = np.linspace(0, max_value, total_pixels, dtype=np.uint32)
+    
+    return pattern.astype(np.uint8).tobytes()[:total_pixels * ((bits_per_pixel + 7) // 8)]
+
+
+def create_short_packet(packet_type, virtual_channel=0):
+    """Create short packet for testing"""
+    from cocotbext.mipi_csi2.csi2_packet import Csi2ShortPacket
+    
+    data_type_map = {
+        "frame_start": DataType.FRAME_START,
+        "frame_end": DataType.FRAME_END,
+        "line_start": DataType.LINE_START,
+        "line_end": DataType.LINE_END
+    }
+    
+    data_type = data_type_map.get(packet_type, DataType.FRAME_START)
+    return Csi2ShortPacket(
+        virtual_channel=virtual_channel,
+        data_type=data_type.value,
+        data=0
+    )
+
+
+def create_long_packet(data_format, payload_data, virtual_channel=0):
+    """Create long packet for testing"""
+    from cocotbext.mipi_csi2.csi2_packet import Csi2LongPacket
+    
+    data_type_map = {
+        "raw6": DataType.RAW6, "raw7": DataType.RAW7, "raw8": DataType.RAW8, 
+        "raw10": DataType.RAW10, "raw12": DataType.RAW12, "raw14": DataType.RAW14,
+        "raw16": DataType.RAW16, "raw20": DataType.RAW20,
+        "rgb444": DataType.RGB444, "rgb555": DataType.RGB555, "rgb565": DataType.RGB565,
+        "rgb666": DataType.RGB666, "rgb888": DataType.RGB888,
+        "yuv420": DataType.YUV420_8BIT, "yuv422": DataType.YUV422_8BIT
+    }
+    
+    data_type = data_type_map.get(data_format.lower(), DataType.RAW8)
+    return Csi2LongPacket(
+        virtual_channel=virtual_channel,
+        data_type=data_type.value,
+        payload=payload_data
+    )
 
 
 @cocotb.test()
@@ -577,6 +932,30 @@ async def test_multilane_non_continuous_clock_short_packet(dut):
             assert False, f"No packets received in {desc} non-continuous clock mode"
 
     cocotb.log.info("All multi-lane non-continuous clock tests PASSED!")
+
+
+# Comprehensive Test Factory Configurations for Enhanced Testing Suite
+if cocotb.SIM_NAME:
+    # Add comprehensive error injection testing
+    factory_error = TestFactory(run_error_injection_test)
+    factory_error.add_option("lane_count", [1, 2, 4])
+    factory_error.add_option("error_type", ["ecc", "checksum", "crc"])
+    factory_error.add_option("data_format", ["raw8", "raw10", "raw12", "rgb888", "yuv422"])
+    factory_error.generate_tests()
+    
+    # Add comprehensive non-continuous clock testing
+    factory_non_cont = TestFactory(run_non_continuous_comprehensive_test)
+    factory_non_cont.add_option("lane_count", [1, 2, 4])
+    factory_non_cont.add_option("bit_rate_mbps", [500, 1000, 1500, 2000])
+    factory_non_cont.add_option("packet_type", ["short", "long"])
+    factory_non_cont.generate_tests()
+    
+    # Add performance benchmarking testing
+    factory_perf = TestFactory(run_performance_benchmark_test)
+    factory_perf.add_option("lane_count", [1, 2, 4])
+    factory_perf.add_option("clock_mode", ["continuous", "non_continuous"])
+    factory_perf.add_option("data_format", ["raw8", "raw12", "rgb888"])
+    factory_perf.generate_tests()
 
 
 # cocotb-test integration

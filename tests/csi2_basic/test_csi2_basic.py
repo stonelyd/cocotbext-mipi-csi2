@@ -447,6 +447,65 @@ if cocotb.SIM_NAME:
 
 
 
+@cocotb.test()
+async def test_non_continuous_clock_short_packet(dut):
+    """Test non-continuous clock mode with short packet transmission"""
+    setup_logging()
+    tb = TB(dut)
+    await tb.setup()
+    
+    # Configure with non-continuous clock - this creates all interfaces
+    await tb.configure_csi2(
+        phy_type=PhyType.DPHY,
+        lane_count=1,
+        bit_rate_mbps=500,
+        continuous_clock=False  # Enable non-continuous clock mode
+    )
+
+    cocotb.log.info("=== Testing Non-Continuous Clock Mode ===")
+    cocotb.log.info(f"Configuration: {tb.config}")
+    cocotb.log.info(f"Clock mode: {'Continuous' if tb.config.continuous_clock else 'Non-continuous'}")
+
+    # Create a simple frame start packet
+    packet = Csi2ShortPacket.frame_start(virtual_channel=0, frame_number=1)
+
+    packet_bytes = packet.to_bytes()
+    cocotb.log.info(f"Transmitting packet: {len(packet_bytes)} bytes")
+    cocotb.log.info(f"Packet bytes: {[f'{b:02x}' for b in packet_bytes]}")
+
+    # Send the packet using PHY model
+    try:
+        cocotb.log.info("Starting non-continuous clock packet transmission")
+        await tb.tx_phy_model.start_packet_transmission()
+        cocotb.log.info("Non-continuous clock packet transmission started")
+        
+        await tb.tx_phy_model.send_packet_data(packet_bytes)
+        cocotb.log.info("Non-continuous clock packet data sent")
+        
+        await tb.tx_phy_model.stop_packet_transmission()
+        cocotb.log.info("Non-continuous clock PHY transmission completed")
+    except Exception as e:
+        cocotb.log.error(f"Error in non-continuous clock PHY transmission: {e}")
+        raise
+
+    # Wait for processing
+    await Timer(1000, units='ns')
+
+    # Verify reception using the RX model
+    try:
+        received_packet = await tb.rx_model.get_next_packet(timeout_ns=10000)
+        assert received_packet is not None, "No packet received"
+        assert isinstance(received_packet, Csi2ShortPacket), "Expected short packet"
+        assert received_packet.header.validate_ecc(), "Received packet ECC validation failed"
+        assert received_packet.data_type == DataType.FRAME_START.value, "Expected frame start packet"
+        assert received_packet.virtual_channel == 0, "Expected VC=0"
+        cocotb.log.info(f"Received frame start packet: VC={received_packet.virtual_channel}, DT=0x{received_packet.data_type:02x}")
+        cocotb.log.info("Non-continuous clock mode test PASSED!")
+    except Exception as e:
+        cocotb.log.error(f"Error receiving packet: {e}")
+        assert False, "No packets received in non-continuous clock mode"
+
+
 # cocotb-test integration
 
 tests_dir = os.path.dirname(__file__)

@@ -194,6 +194,12 @@ class DPhyTxModel:
         # Clock generation for continuous clock mode
         if config.continuous_clock:
             self._clock_task = cocotb.start_soon(self._generate_continuous_clock())
+        else:
+            self._clock_task = None
+
+        # NEW: Non-continuous clock state tracking
+        self.clock_lane_hs_active = False
+        self.non_continuous_clock_task = None
 
         # Monitoring state
         self.transmission_active = False
@@ -409,11 +415,21 @@ class DPhyTxModel:
 
     async def _start_hs_transmission(self, lane: DPhyLane):
         """Start HS transmission on a specific lane"""
-        await self._hs_prepare_sequence(lane)
+        if lane.lane_type == DPhyLaneType.CLOCK and not self.config.continuous_clock:
+            # Use non-continuous clock specific sequence
+            await self._start_non_continuous_clock()
+        else:
+            # Use standard HS prepare sequence for data lanes and continuous clock mode
+            await self._hs_prepare_sequence(lane)
 
     async def _stop_hs_transmission(self, lane: DPhyLane):
         """Stop HS transmission on a specific lane"""
-        await self._hs_exit_sequence(lane)
+        if lane.lane_type == DPhyLaneType.CLOCK and not self.config.continuous_clock:
+            # Use non-continuous clock specific sequence
+            await self._stop_non_continuous_clock()
+        else:
+            # Use standard HS exit sequence for data lanes and continuous clock mode
+            await self._hs_exit_sequence(lane)
 
     async def _hs_prepare_sequence(self, lane: DPhyLane):
         """Execute HS prepare sequence for a specific lane"""
@@ -476,6 +492,82 @@ class DPhyTxModel:
 
             clock_signals['p'].value = 0
             clock_signals['n'].value = 1
+            await Timer(period_ns / 2, units='ns')
+
+    async def _start_non_continuous_clock(self):
+        """Start non-continuous clock sequence: LP-11 → LP-01 → LP-00 → HS-0 → HS-1"""
+        self.lane_loggers[self.clock_lane.name].debug("Clock lane: Starting non-continuous clock HS prepare")
+        clock_signals = self.lane_signals[self.clock_lane.name]
+        
+        # Step 1: LP-01 state  
+        clock_signals['p'].value = 0
+        clock_signals['n'].value = 1
+        self.lane_states[self.clock_lane.name] = DPhyState.LP_01
+        await Timer(50, units='ns')  # t_lpx duration
+        
+        # Step 2: LP-00 (Bridge state)
+        clock_signals['p'].value = 0  
+        clock_signals['n'].value = 0
+        self.lane_states[self.clock_lane.name] = DPhyState.LP_00
+        await Timer(self.phy_config.t_clk_prepare, units='ns')
+        
+        # Step 3: HS-0 state
+        clock_signals['p'].value = 0
+        clock_signals['n'].value = 1
+        self.lane_states[self.clock_lane.name] = DPhyState.HS_0
+        await Timer(self.phy_config.t_clk_zero, units='ns')
+        
+        # Step 4: Start HS clock generation
+        self.clock_lane_hs_active = True
+        self.non_continuous_clock_task = cocotb.start_soon(self._generate_hs_clock_burst())
+        
+        # Wait for t_clk_pre before data lanes can start
+        await Timer(self.phy_config.t_clk_pre, units='ns')
+        self.lane_loggers[self.clock_lane.name].debug("Clock lane: Non-continuous clock HS prepare complete")
+
+    async def _stop_non_continuous_clock(self):  
+        """Stop non-continuous clock sequence: HS-1 → HS-0 → LP-11"""
+        self.lane_loggers[self.clock_lane.name].debug("Clock lane: Starting non-continuous clock HS exit")
+        
+        # Wait for t_clk_post timing before stopping clock
+        await Timer(self.phy_config.t_clk_post, units='ns')
+        
+        # Stop HS clock generation
+        if self.non_continuous_clock_task and not self.non_continuous_clock_task.done():
+            self.non_continuous_clock_task.kill()
+            self.non_continuous_clock_task = None
+        
+        clock_signals = self.lane_signals[self.clock_lane.name]
+        
+        # Drive HS-0 during trail period
+        clock_signals['p'].value = 0
+        clock_signals['n'].value = 1
+        self.lane_states[self.clock_lane.name] = DPhyState.HS_0
+        await Timer(self.phy_config.t_clk_trail, units='ns')
+        
+        # Return to LP-11
+        clock_signals['p'].value = 1
+        clock_signals['n'].value = 1
+        self.lane_states[self.clock_lane.name] = DPhyState.LP_11
+        self.clock_lane_hs_active = False
+        self.lane_loggers[self.clock_lane.name].debug("Clock lane: Non-continuous clock HS exit complete")
+
+    async def _generate_hs_clock_burst(self):
+        """Generate HS clock during non-continuous mode transmission"""
+        period_ns = self.config.get_bit_period_ns()
+        clock_signals = self.lane_signals[self.clock_lane.name]
+
+        while self.clock_lane_hs_active:
+            # Generate differential clock - HS-1
+            clock_signals['p'].value = 1
+            clock_signals['n'].value = 0
+            self.lane_states[self.clock_lane.name] = DPhyState.HS_1
+            await Timer(period_ns / 2, units='ns')
+
+            # Generate differential clock - HS-0
+            clock_signals['p'].value = 0
+            clock_signals['n'].value = 1
+            self.lane_states[self.clock_lane.name] = DPhyState.HS_0
             await Timer(period_ns / 2, units='ns')
 
     async def send_packet_data(self, data: bytes):
